@@ -1,6 +1,8 @@
 # Central Comercial IA EAD
 
-Aplicacao web em Next.js + Tailwind para gerar abordagens comerciais curtas e humanizadas para leads interessados em cursos EAD.
+Aplicacao web em Next.js + Tailwind para conduzir conversas comerciais com leads interessados em cursos EAD da UniCesumar.
+
+O fluxo funciona como um chat: o consultor informa curso, perfil do lead e objecao inicial, gera a primeira abordagem e pode continuar enviando duvidas ou respostas do lead. A IA considera o historico da conversa antes de responder.
 
 ## Configuracao
 

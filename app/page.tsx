@@ -1,53 +1,98 @@
 "use client";
 
-import { Check, Clipboard, Sparkles } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  Check,
+  Clipboard,
+  MessageCircle,
+  Send,
+  Sparkles,
+  Trash2
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type HistoryItem = {
+type ChatMessage = {
   id: string;
-  course: string;
-  message: string;
+  role: "consultant" | "assistant";
+  content: string;
 };
 
-const initialHistory: HistoryItem[] = [];
+const storageKey = "central-comercial-chat";
 
 export default function Home() {
   const [course, setCourse] = useState("");
   const [profile, setProfile] = useState("");
   const [objection, setObjection] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const lastAssistantMessage = useMemo(
+    () => [...messages].reverse().find((message) => message.role === "assistant"),
+    [messages]
+  );
+
+  const canSend = useMemo(
+    () =>
+      Boolean(course.trim() && profile.trim() && objection.trim()) &&
+      !isLoading &&
+      (!messages.length || Boolean(input.trim())),
+    [course, profile, objection, input, messages.length, isLoading]
+  );
 
   useEffect(() => {
-    const storedHistory = window.localStorage.getItem(
-      "central-comercial-history"
-    );
+    const storedChat = window.localStorage.getItem(storageKey);
+
+    if (!storedChat) {
+      return;
+    }
 
     try {
-      if (storedHistory) {
-        setHistory(JSON.parse(storedHistory));
-      }
+      const parsed = JSON.parse(storedChat);
+      setCourse(parsed.course || "");
+      setProfile(parsed.profile || "");
+      setObjection(parsed.objection || "");
+      setMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
     } catch {
-      window.localStorage.removeItem("central-comercial-history");
+      window.localStorage.removeItem(storageKey);
     }
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem(
-      "central-comercial-history",
-      JSON.stringify(history)
+      storageKey,
+      JSON.stringify({ course, profile, objection, messages })
     );
-  }, [history]);
+  }, [course, profile, objection, messages]);
 
-  const canSubmit = useMemo(
-    () =>
-      Boolean(course.trim() && profile.trim() && objection.trim()) &&
-      !isLoading,
-    [course, profile, objection, isLoading]
-  );
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading]);
+
+  async function requestAssistant(nextMessages: ChatMessage[]) {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        course: course.trim(),
+        profile: profile.trim(),
+        objection: objection.trim(),
+        messages: nextMessages.map(({ role, content }) => ({ role, content }))
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Falha ao gerar mensagem.");
+    }
+
+    return data.message as string;
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,36 +100,33 @@ export default function Home() {
     setCopied(false);
     setIsLoading(true);
 
+    const consultantMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "consultant",
+      content: messages.length
+        ? input.trim()
+        : [
+            `Curso: ${course.trim()}`,
+            `Perfil do lead: ${profile.trim()}`,
+            `Objeção inicial: ${objection.trim()}`
+          ].join("\n")
+    };
+
+    const nextMessages = [...messages, consultantMessage];
+    setMessages(nextMessages);
+    setInput("");
+
     try {
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          course: course.trim(),
-          profile: profile.trim(),
-          objection: objection.trim()
-        })
-      });
+      const assistantMessage = await requestAssistant(nextMessages);
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Falha ao gerar mensagem.");
-      }
-
-      setAnswer(data.message);
-      setHistory((current) =>
-        [
-          {
-            id: crypto.randomUUID(),
-            course: course.trim(),
-            message: data.message
-          },
-          ...current
-        ].slice(0, 5)
-      );
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: assistantMessage
+        }
+      ]);
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -96,14 +138,22 @@ export default function Home() {
     }
   }
 
-  async function copyAnswer() {
-    if (!answer) {
+  async function copyLastAnswer() {
+    if (!lastAssistantMessage) {
       return;
     }
 
-    await navigator.clipboard.writeText(answer);
+    await navigator.clipboard.writeText(lastAssistantMessage.content);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  function clearConversation() {
+    setMessages([]);
+    setInput("");
+    setError("");
+    setCopied(false);
+    window.localStorage.removeItem(storageKey);
   }
 
   return (
@@ -118,21 +168,25 @@ export default function Home() {
               Central Comercial IA EAD
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
-              Gere abordagens curtas, humanas e prontas para WhatsApp a partir
-              do curso, perfil do lead e principal objeção.
+              Converse com a IA para conduzir leads da UniCesumar com mensagens
+              curtas, humanas e prontas para WhatsApp.
             </p>
           </div>
           <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
-            API protegida no servidor
+            Chat com API protegida
           </div>
         </div>
       </section>
 
-      <section className="mx-auto grid w-full max-w-6xl gap-6 px-5 py-6 sm:px-8 lg:grid-cols-[1fr_0.9fr] lg:py-8">
-        <form
-          onSubmit={handleSubmit}
-          className="rounded-lg border border-slate-200 bg-white p-5 shadow-soft sm:p-6"
-        >
+      <section className="mx-auto grid w-full max-w-6xl gap-6 px-5 py-6 sm:px-8 lg:grid-cols-[360px_1fr] lg:py-8">
+        <aside className="rounded-lg border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
+          <div className="mb-5 flex items-center gap-2 text-blue-700">
+            <MessageCircle aria-hidden="true" className="h-5 w-5" />
+            <h2 className="text-lg font-bold text-slate-950">
+              Contexto do lead
+            </h2>
+          </div>
+
           <div className="grid gap-5">
             <label className="grid gap-2">
               <span className="text-sm font-semibold text-slate-800">
@@ -141,111 +195,162 @@ export default function Home() {
               <input
                 value={course}
                 onChange={(event) => setCourse(event.target.value)}
-                placeholder="Ex.: Administração, Pedagogia, Gestão Comercial"
+                placeholder="Ex.: Administração"
                 className="min-h-12 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
               />
             </label>
 
             <label className="grid gap-2">
               <span className="text-sm font-semibold text-slate-800">
-                Perfil do Lead
+                Perfil do lead
               </span>
               <textarea
                 value={profile}
                 onChange={(event) => setProfile(event.target.value)}
-                placeholder="Ex.: trabalha o dia todo, quer mudar de área, tem pouco tempo para estudar"
-                rows={4}
+                placeholder="Ex.: trabalha o dia todo e quer crescer na carreira"
+                rows={5}
                 className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
               />
             </label>
 
             <label className="grid gap-2">
               <span className="text-sm font-semibold text-slate-800">
-                Objeção
+                Objeção inicial
               </span>
               <textarea
                 value={objection}
                 onChange={(event) => setObjection(event.target.value)}
-                placeholder="Ex.: acha caro, está inseguro com EAD, quer pensar mais"
-                rows={3}
+                placeholder="Ex.: está inseguro com EAD"
+                rows={4}
                 className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
               />
             </label>
 
+            <button
+              type="button"
+              onClick={clearConversation}
+              className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-bold text-slate-700 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+            >
+              <Trash2 aria-hidden="true" className="h-4 w-4" />
+              Limpar conversa
+            </button>
+          </div>
+        </aside>
+
+        <section className="flex min-h-[620px] flex-col rounded-lg border border-slate-200 bg-white shadow-soft">
+          <div className="flex flex-col gap-3 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+            <div>
+              <h2 className="text-xl font-bold text-slate-950">
+                Conversa comercial
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                Envie a primeira abordagem e continue com dúvidas ou respostas
+                do lead.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={copyLastAnswer}
+              disabled={!lastAssistantMessage}
+              className="flex min-h-10 items-center justify-center gap-2 rounded-md border border-blue-200 px-4 text-sm font-bold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+            >
+              {copied ? (
+                <Check aria-hidden="true" className="h-4 w-4" />
+              ) : (
+                <Clipboard aria-hidden="true" className="h-4 w-4" />
+              )}
+              {copied ? "Última resposta copiada" : "Copiar última resposta"}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-6">
+            <div className="grid gap-4">
+              {messages.length ? (
+                messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`flex ${
+                      message.role === "assistant"
+                        ? "justify-start"
+                        : "justify-end"
+                    }`}
+                  >
+                    <article
+                      className={`max-w-[88%] rounded-lg border px-4 py-3 text-sm leading-6 shadow-sm sm:max-w-[76%] ${
+                        message.role === "assistant"
+                          ? "border-blue-100 bg-white text-slate-800"
+                          : "border-blue-700 bg-blue-700 text-white"
+                      }`}
+                    >
+                      <span
+                        className={`mb-2 block text-xs font-bold uppercase ${
+                          message.role === "assistant"
+                            ? "text-blue-700"
+                            : "text-blue-100"
+                        }`}
+                      >
+                        {message.role === "assistant" ? "IA" : "Consultor"}
+                      </span>
+                      <p className="whitespace-pre-line">{message.content}</p>
+                    </article>
+                  </div>
+                ))
+              ) : (
+                <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-5 text-center text-sm leading-6 text-slate-500">
+                  Preencha o contexto do lead e clique em Enviar para gerar a
+                  primeira abordagem.
+                </div>
+              )}
+
+              {isLoading ? (
+                <div className="flex justify-start">
+                  <div className="rounded-lg border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-slate-500 shadow-sm">
+                    Gerando resposta curta para WhatsApp...
+                  </div>
+                </div>
+              ) : null}
+              <div ref={chatEndRef} />
+            </div>
+          </div>
+
+          <form
+            onSubmit={handleSubmit}
+            className="border-t border-slate-200 bg-white p-4 sm:p-5"
+          >
             {error ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+              <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
                 {error}
               </div>
             ) : null}
 
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-blue-700 px-5 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              <Sparkles aria-hidden="true" className="h-4 w-4" />
-              {isLoading ? "Gerando abordagem..." : "Gerar abordagem"}
-            </button>
-          </div>
-        </form>
-
-        <div className="grid gap-6">
-          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <h2 className="text-xl font-bold text-slate-950">
-                Resposta da IA
-              </h2>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <textarea
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder={
+                  messages.length
+                    ? "Digite a dúvida ou resposta do lead..."
+                    : "A primeira mensagem usa o contexto inicial. Clique em Enviar."
+                }
+                rows={3}
+                disabled={!messages.length}
+                className="min-h-24 flex-1 resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-500"
+              />
               <button
-                type="button"
-                onClick={copyAnswer}
-                disabled={!answer}
-                className="flex min-h-10 items-center justify-center gap-2 rounded-md border border-blue-200 px-4 text-sm font-bold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                type="submit"
+                disabled={!canSend}
+                className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-blue-700 px-6 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:self-end"
               >
-                {copied ? (
-                  <Check aria-hidden="true" className="h-4 w-4" />
+                {messages.length ? (
+                  <Send aria-hidden="true" className="h-4 w-4" />
                 ) : (
-                  <Clipboard aria-hidden="true" className="h-4 w-4" />
+                  <Sparkles aria-hidden="true" className="h-4 w-4" />
                 )}
-                {copied ? "Mensagem copiada" : "Copiar mensagem"}
+                Enviar
               </button>
             </div>
-
-            <div className="mt-5 min-h-48 whitespace-pre-line rounded-md border border-slate-200 bg-slate-50 p-4 text-base leading-7 text-slate-800">
-              {answer ||
-                "A mensagem gerada aparecerá aqui, pronta para enviar ao lead."}
-            </div>
-          </section>
-
-          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
-            <h2 className="text-xl font-bold text-slate-950">
-              Histórico recente
-            </h2>
-            <div className="mt-4 grid gap-3">
-              {history.length ? (
-                history.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setAnswer(item.message)}
-                    className="rounded-md border border-slate-200 bg-white p-4 text-left transition hover:border-blue-200 hover:bg-blue-50"
-                  >
-                    <span className="block text-sm font-bold text-blue-700">
-                      {item.course}
-                    </span>
-                    <span className="mt-2 line-clamp-3 block whitespace-pre-line text-sm leading-6 text-slate-600">
-                      {item.message}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <div className="rounded-md border border-dashed border-slate-300 px-4 py-6 text-sm leading-6 text-slate-500">
-                  As últimas respostas geradas ficarão disponíveis aqui durante
-                  esta sessão.
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
+          </form>
+        </section>
       </section>
     </main>
   );
