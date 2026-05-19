@@ -3,6 +3,7 @@
 import {
   Check,
   Clipboard,
+  Lightbulb,
   MessageCircle,
   Send,
   Sparkles,
@@ -17,6 +18,14 @@ type ChatMessage = {
 };
 
 const storageKey = "central-comercial-chat";
+
+function extractConsultantSuggestion(content: string) {
+  const match = content.match(
+    /Dica para (?:o )?(?:consultor|vendedor):\s*([\s\S]*?)(?:\n\s*Pergunta de sondagem:|$)/i
+  );
+
+  return match?.[1]?.trim() || "";
+}
 
 export default function Home() {
   const [course, setCourse] = useState("");
@@ -168,8 +177,8 @@ export default function Home() {
               Central Comercial IA EAD
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
-              Converse com a IA para conduzir leads da UniCesumar com mensagens
-              curtas, humanas e prontas para WhatsApp.
+              Use sondagem inteligente para criar conexão, entender o momento
+              do lead e conduzir a conversa com mais segurança.
             </p>
           </div>
           <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
@@ -241,11 +250,11 @@ export default function Home() {
           <div className="flex flex-col gap-3 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
             <div>
               <h2 className="text-xl font-bold text-slate-950">
-                Conversa comercial
+                Conversa com sondagem inteligente
               </h2>
               <p className="mt-1 text-sm leading-6 text-slate-500">
-                Envie a primeira abordagem e continue com dúvidas ou respostas
-                do lead.
+                A IA orienta mensagem, ação prática e pergunta para entender
+                melhor o lead antes do fechamento.
               </p>
             </div>
             <button
@@ -292,13 +301,23 @@ export default function Home() {
                         {message.role === "assistant" ? "IA" : "Consultor"}
                       </span>
                       <p className="whitespace-pre-line">{message.content}</p>
+                      {message.role === "assistant" &&
+                      extractConsultantSuggestion(message.content) ? (
+                        <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-950">
+                          <span className="mb-1 flex items-center gap-2 font-bold text-blue-800">
+                            <Lightbulb aria-hidden="true" className="h-4 w-4" />
+                            Sugestão para o consultor
+                          </span>
+                          {extractConsultantSuggestion(message.content)}
+                        </div>
+                      ) : null}
                     </article>
                   </div>
                 ))
               ) : (
                 <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-5 text-center text-sm leading-6 text-slate-500">
                   Preencha o contexto do lead e clique em Enviar para gerar a
-                  primeira abordagem.
+                  primeira abordagem com sondagem inteligente.
                 </div>
               )}
 
