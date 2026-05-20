@@ -20,6 +20,8 @@ NEXT_PUBLIC_SUPABASE_URL=https://seu-projeto.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anon_publica
 ```
 
+Use a URL base do projeto Supabase em `NEXT_PUBLIC_SUPABASE_URL`, no formato `https://seu-projeto.supabase.co`. Nao use a URL REST `https://seu-projeto.supabase.co/rest/v1`, pois o Supabase Auth precisa chamar `/auth/v1`.
+
 3. Inicie o ambiente local:
 
 ```bash

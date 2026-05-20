@@ -49,17 +49,10 @@ type AssistantParts = {
 };
 
 const statusOptions: LeadStatus[] = ["Frio", "Morno", "Quente"];
-
-function createSupabaseClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    return null;
-  }
-
-  return createClient(supabaseUrl, supabaseAnonKey);
-}
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 function extractSection(content: string, title: string, nextTitles: string[]) {
   const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -113,7 +106,6 @@ function formatDate(value: string) {
 }
 
 export default function Home() {
-  const supabase = useMemo(() => createSupabaseClient(), []);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
@@ -154,11 +146,6 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (!supabase) {
-      setAuthLoading(false);
-      return;
-    }
-
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
       setAuthLoading(false);
@@ -171,16 +158,16 @@ export default function Home() {
     );
 
     return () => listener.subscription.unsubscribe();
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
-    if (!supabase || !user) {
+    if (!user) {
       setConversations([]);
       return;
     }
 
     loadConversations(supabase, user.id);
-  }, [supabase, user]);
+  }, [user]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -204,11 +191,6 @@ export default function Home() {
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!supabase) {
-      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-      return;
-    }
-
     setError("");
     setAuthMessage("");
     setAuthLoading(true);
@@ -227,11 +209,6 @@ export default function Home() {
 
   async function handleSignUp(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
-
-    if (!supabase) {
-      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-      return;
-    }
 
     if (!email.trim() || !password.trim()) {
       setError("Informe e-mail e senha para criar a conta.");
@@ -260,11 +237,6 @@ export default function Home() {
   }
 
   async function handleGoogleLogin() {
-    if (!supabase) {
-      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-      return;
-    }
-
     setError("");
     setAuthMessage("");
 
@@ -281,11 +253,6 @@ export default function Home() {
   }
 
   async function handlePasswordReset() {
-    if (!supabase) {
-      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-      return;
-    }
-
     if (!email.trim()) {
       setError("Informe seu e-mail para receber o link de recuperação.");
       setAuthMessage("");
@@ -313,10 +280,6 @@ export default function Home() {
   }
 
   async function handleSignOut() {
-    if (!supabase) {
-      return;
-    }
-
     await supabase.auth.signOut();
     setUser(null);
     setConversationId("");
@@ -325,7 +288,7 @@ export default function Home() {
   }
 
   async function createConversation() {
-    if (!supabase || !user) {
+    if (!user) {
       throw new Error("Faça login para iniciar uma conversa.");
     }
 
@@ -359,7 +322,7 @@ export default function Home() {
     role: ChatMessage["role"],
     content: string
   ) {
-    if (!supabase || !user) {
+    if (!user) {
       throw new Error("Faça login para salvar mensagens.");
     }
 
@@ -388,7 +351,7 @@ export default function Home() {
   }
 
   async function openConversation(conversation: Conversation) {
-    if (!supabase || !user) {
+    if (!user) {
       return;
     }
 
@@ -496,7 +459,7 @@ export default function Home() {
         }
       ]);
 
-      if (supabase && user) {
+      if (user) {
         await loadConversations(supabase, user.id);
       }
     } catch (requestError) {
