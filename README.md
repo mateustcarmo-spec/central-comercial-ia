@@ -16,6 +16,8 @@ npm install
 
 ```bash
 OPENAI_API_KEY=sua_chave_da_openai
+NEXT_PUBLIC_SUPABASE_URL=https://seu-projeto.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anon_publica
 ```
 
 3. Inicie o ambiente local:
@@ -29,3 +31,5 @@ npm run dev
 ## Seguranca
 
 A chave da OpenAI fica apenas no backend, dentro da rota `app/api/generate/route.ts`, usando a variavel de ambiente `OPENAI_API_KEY`.
+
+O Supabase usa Auth por e-mail e senha. As tabelas `conversations` e `messages` devem ter `user_id` e regras de RLS para que cada usuario veja apenas os proprios registros.

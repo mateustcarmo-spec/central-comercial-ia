@@ -1,10 +1,13 @@
 "use client";
 
+import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import {
   Bot,
   Check,
   Clipboard,
+  History,
   Lightbulb,
+  LogOut,
   RotateCcw,
   Send,
   Sparkles
@@ -20,14 +23,42 @@ type ChatMessage = {
 
 type LeadStatus = "Frio" | "Morno" | "Quente";
 
+type Conversation = {
+  id: string;
+  lead_name: string | null;
+  course: string;
+  profile: string;
+  objection: string;
+  lead_status: LeadStatus | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+type MessageRow = {
+  id: string;
+  role: "consultant" | "assistant";
+  content: string;
+  created_at: string;
+};
+
 type AssistantParts = {
   leadMessage: string;
   consultantTip: string;
   probingQuestion: string;
 };
 
-const storageKey = "central-comercial-chat";
 const statusOptions: LeadStatus[] = ["Frio", "Morno", "Quente"];
+
+function createSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return null;
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey);
+}
 
 function extractSection(content: string, title: string, nextTitles: string[]) {
   const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -35,7 +66,9 @@ function extractSection(content: string, title: string, nextTitles: string[]) {
     .map((nextTitle) => nextTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("|");
   const stop = escapedNextTitles ? `(?=\\n\\s*(?:${escapedNextTitles}):|$)` : "$";
-  const match = content.match(new RegExp(`${escapedTitle}:\\s*([\\s\\S]*?)${stop}`, "i"));
+  const match = content.match(
+    new RegExp(`${escapedTitle}:\\s*([\\s\\S]*?)${stop}`, "i")
+  );
 
   return match?.[1]?.trim() || "";
 }
@@ -69,12 +102,28 @@ function formatTime(value?: string) {
   }).format(date);
 }
 
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
 export default function Home() {
+  const supabase = useMemo(() => createSupabaseClient(), []);
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [leadName, setLeadName] = useState("");
   const [course, setCourse] = useState("");
   const [profile, setProfile] = useState("");
   const [objection, setObjection] = useState("");
   const [leadStatus, setLeadStatus] = useState<LeadStatus>("Morno");
+  const [conversationId, setConversationId] = useState("");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -94,49 +143,193 @@ export default function Home() {
 
   const canSend = useMemo(
     () =>
+      Boolean(user) &&
       hasLeadContext &&
       !isLoading &&
       (!messages.length || Boolean(input.trim())),
-    [hasLeadContext, input, messages.length, isLoading]
+    [user, hasLeadContext, input, messages.length, isLoading]
   );
 
   useEffect(() => {
-    const storedChat = window.localStorage.getItem(storageKey);
-
-    if (!storedChat) {
+    if (!supabase) {
+      setAuthLoading(false);
       return;
     }
 
-    try {
-      const parsed = JSON.parse(storedChat);
-      setLeadName(parsed.leadName || "");
-      setCourse(parsed.course || "");
-      setProfile(parsed.profile || "");
-      setObjection(parsed.objection || "");
-      setLeadStatus(statusOptions.includes(parsed.leadStatus) ? parsed.leadStatus : "Morno");
-      setMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
-    } catch {
-      window.localStorage.removeItem(storageKey);
-    }
-  }, []);
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setUser(session?.user ?? null);
+      }
+    );
+
+    return () => listener.subscription.unsubscribe();
+  }, [supabase]);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      storageKey,
-      JSON.stringify({
-        leadName,
-        course,
-        profile,
-        objection,
-        leadStatus,
-        messages
-      })
-    );
-  }, [leadName, course, profile, objection, leadStatus, messages]);
+    if (!supabase || !user) {
+      setConversations([]);
+      return;
+    }
+
+    loadConversations(supabase, user.id);
+  }, [supabase, user]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  async function loadConversations(client: SupabaseClient, userId: string) {
+    const { data, error: queryError } = await client
+      .from("conversations")
+      .select("id, lead_name, course, profile, objection, lead_status, created_at, updated_at")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false });
+
+    if (queryError) {
+      setError(queryError.message);
+      return;
+    }
+
+    setConversations((data ?? []) as Conversation[]);
+  }
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!supabase) {
+      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return;
+    }
+
+    setError("");
+    setAuthLoading(true);
+
+    const { error: loginError } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (loginError) {
+      setError(loginError.message);
+    }
+
+    setAuthLoading(false);
+  }
+
+  async function handleSignOut() {
+    if (!supabase) {
+      return;
+    }
+
+    await supabase.auth.signOut();
+    setUser(null);
+    setConversationId("");
+    setConversations([]);
+    resetConversationForm();
+  }
+
+  async function createConversation() {
+    if (!supabase || !user) {
+      throw new Error("Faça login para iniciar uma conversa.");
+    }
+
+    const payload = {
+      user_id: user.id,
+      lead_name: leadName.trim() || null,
+      course: course.trim(),
+      profile: profile.trim(),
+      objection: objection.trim(),
+      lead_status: leadStatus
+    };
+
+    const { data, error: insertError } = await supabase
+      .from("conversations")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+
+    setConversationId(data.id);
+    await loadConversations(supabase, user.id);
+
+    return data.id as string;
+  }
+
+  async function saveMessage(
+    activeConversationId: string,
+    role: ChatMessage["role"],
+    content: string
+  ) {
+    if (!supabase || !user) {
+      throw new Error("Faça login para salvar mensagens.");
+    }
+
+    const { data, error: insertError } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: activeConversationId,
+        user_id: user.id,
+        role,
+        content
+      })
+      .select("id, created_at")
+      .single();
+
+    if (insertError) {
+      throw new Error(insertError.message);
+    }
+
+    await supabase
+      .from("conversations")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", activeConversationId)
+      .eq("user_id", user.id);
+
+    return data as { id: string; created_at: string };
+  }
+
+  async function openConversation(conversation: Conversation) {
+    if (!supabase || !user) {
+      return;
+    }
+
+    setError("");
+    setConversationId(conversation.id);
+    setLeadName(conversation.lead_name || "");
+    setCourse(conversation.course || "");
+    setProfile(conversation.profile || "");
+    setObjection(conversation.objection || "");
+    setLeadStatus(conversation.lead_status || "Morno");
+
+    const { data, error: queryError } = await supabase
+      .from("messages")
+      .select("id, role, content, created_at")
+      .eq("conversation_id", conversation.id)
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true });
+
+    if (queryError) {
+      setError(queryError.message);
+      return;
+    }
+
+    setMessages(
+      ((data ?? []) as MessageRow[]).map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.created_at
+      }))
+    );
+  }
 
   async function requestAssistant(nextMessages: ChatMessage[]) {
     const response = await fetch("/api/generate", {
@@ -174,31 +367,47 @@ export default function Home() {
     setCopied(false);
     setIsLoading(true);
 
-    const consultantMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "consultant",
-      createdAt: new Date().toISOString(),
-      content: messages.length
-        ? input.trim()
-        : `Iniciar conversa com ${leadName.trim() || "o lead"} sobre ${course.trim()}.`
-    };
-
-    const nextMessages = [...messages, consultantMessage];
-    setMessages(nextMessages);
-    setInput("");
-
     try {
-      const assistantMessage = await requestAssistant(nextMessages);
+      const activeConversationId = conversationId || (await createConversation());
+      const consultantContent = messages.length
+        ? input.trim()
+        : `Iniciar conversa com ${leadName.trim() || "o lead"} sobre ${course.trim()}.`;
+      const savedConsultantMessage = await saveMessage(
+        activeConversationId,
+        "consultant",
+        consultantContent
+      );
+      const consultantMessage: ChatMessage = {
+        id: savedConsultantMessage.id,
+        role: "consultant",
+        content: consultantContent,
+        createdAt: savedConsultantMessage.created_at
+      };
+      const nextMessages = [...messages, consultantMessage];
+
+      setMessages(nextMessages);
+      setInput("");
+
+      const assistantContent = await requestAssistant(nextMessages);
+      const savedAssistantMessage = await saveMessage(
+        activeConversationId,
+        "assistant",
+        assistantContent
+      );
 
       setMessages((current) => [
         ...current,
         {
-          id: crypto.randomUUID(),
+          id: savedAssistantMessage.id,
           role: "assistant",
-          content: assistantMessage,
-          createdAt: new Date().toISOString()
+          content: assistantContent,
+          createdAt: savedAssistantMessage.created_at
         }
       ]);
+
+      if (supabase && user) {
+        await loadConversations(supabase, user.id);
+      }
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -221,29 +430,109 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1800);
   }
 
-  function clearConversation() {
+  function resetConversationForm() {
+    setLeadName("");
+    setCourse("");
+    setProfile("");
+    setObjection("");
+    setLeadStatus("Morno");
+    setConversationId("");
     setMessages([]);
     setInput("");
     setError("");
     setCopied(false);
-    window.localStorage.removeItem(storageKey);
+  }
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#e5ddd5] px-5 text-slate-700">
+        Carregando Central Comercial IA EAD...
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#e5ddd5] px-5">
+        <form
+          onSubmit={handleLogin}
+          className="w-full max-w-md rounded-lg bg-white p-6 shadow-soft"
+        >
+          <p className="text-sm font-semibold uppercase text-emerald-700">
+            Central Comercial IA EAD
+          </p>
+          <h1 className="mt-2 text-2xl font-bold text-slate-950">
+            Acesse sua conta
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-slate-500">
+            Entre com e-mail e senha para salvar conversas e continuar
+            atendimentos antigos.
+          </p>
+
+          <div className="mt-6 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-slate-800">
+                E-mail
+              </span>
+              <input
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                className="min-h-11 rounded-md border border-slate-300 px-4 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-slate-800">
+                Senha
+              </span>
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                type="password"
+                className="min-h-11 rounded-md border border-slate-300 px-4 outline-none focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
+              />
+            </label>
+
+            {error ? (
+              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                {error}
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              className="min-h-12 rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
+            >
+              Entrar
+            </button>
+          </div>
+        </form>
+      </main>
+    );
   }
 
   return (
     <main className="min-h-screen bg-[#e5ddd5]">
       <section className="mx-auto grid min-h-screen w-full max-w-7xl gap-0 bg-slate-100 lg:grid-cols-[380px_1fr] lg:p-5">
         <aside className="order-2 border-r border-slate-200 bg-white p-5 lg:order-1 lg:rounded-l-lg lg:p-6">
-          <div className="mb-6">
-            <p className="text-sm font-semibold uppercase text-emerald-700">
-              Central Comercial IA EAD
-            </p>
-            <h1 className="mt-2 text-2xl font-bold tracking-normal text-slate-950">
-              Contexto do Lead
-            </h1>
-            <p className="mt-2 text-sm leading-6 text-slate-500">
-              Informe os dados comerciais para a IA orientar a conversa com
-              sondagem e conexão.
-            </p>
+          <div className="mb-5 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase text-emerald-700">
+                Central Comercial IA EAD
+              </p>
+              <h1 className="mt-2 text-2xl font-bold tracking-normal text-slate-950">
+                Contexto do Lead
+              </h1>
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+              title="Sair"
+            >
+              <LogOut aria-hidden="true" className="h-5 w-5" />
+            </button>
           </div>
 
           <div className="grid gap-4">
@@ -324,6 +613,53 @@ export default function Home() {
               Iniciar conversa
             </button>
           </div>
+
+          <section className="mt-8 border-t border-slate-200 pt-5">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950">
+                <History aria-hidden="true" className="h-5 w-5 text-emerald-700" />
+                Histórico
+              </h2>
+              <button
+                type="button"
+                onClick={resetConversationForm}
+                className="text-sm font-bold text-emerald-700 hover:text-emerald-800"
+              >
+                Nova
+              </button>
+            </div>
+
+            <div className="grid max-h-80 gap-2 overflow-y-auto pr-1">
+              {conversations.length ? (
+                conversations.map((conversation) => (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    onClick={() => openConversation(conversation)}
+                    className={`rounded-md border p-3 text-left transition hover:border-emerald-300 hover:bg-emerald-50 ${
+                      conversation.id === conversationId
+                        ? "border-emerald-300 bg-emerald-50"
+                        : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <span className="block truncate text-sm font-bold text-slate-900">
+                      {conversation.lead_name || "Lead sem nome"}
+                    </span>
+                    <span className="mt-1 block truncate text-sm text-slate-600">
+                      {conversation.course}
+                    </span>
+                    <span className="mt-2 block text-xs font-medium text-slate-400">
+                      {formatDate(conversation.updated_at || conversation.created_at)}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div className="rounded-md border border-dashed border-slate-300 px-4 py-5 text-sm leading-6 text-slate-500">
+                  Suas conversas salvas aparecerão aqui.
+                </div>
+              )}
+            </div>
+          </section>
         </aside>
 
         <section className="order-1 flex min-h-screen flex-col bg-[#efe7dd] lg:order-2 lg:min-h-[calc(100vh-40px)] lg:rounded-r-lg">
@@ -464,7 +800,7 @@ export default function Home() {
             <div className="mx-auto flex max-w-4xl items-end gap-2">
               <button
                 type="button"
-                onClick={clearConversation}
+                onClick={resetConversationForm}
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm transition hover:text-red-600"
                 title="Limpar conversa"
               >
