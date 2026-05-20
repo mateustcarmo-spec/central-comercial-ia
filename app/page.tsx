@@ -10,7 +10,8 @@ import {
   LogOut,
   RotateCcw,
   Send,
-  Sparkles
+  Sparkles,
+  UserPlus
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -115,8 +116,10 @@ export default function Home() {
   const supabase = useMemo(() => createSupabaseClient(), []);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
   const [leadName, setLeadName] = useState("");
   const [course, setCourse] = useState("");
   const [profile, setProfile] = useState("");
@@ -207,6 +210,7 @@ export default function Home() {
     }
 
     setError("");
+    setAuthMessage("");
     setAuthLoading(true);
 
     const { error: loginError } = await supabase.auth.signInWithPassword({
@@ -216,6 +220,93 @@ export default function Home() {
 
     if (loginError) {
       setError(loginError.message);
+    }
+
+    setAuthLoading(false);
+  }
+
+  async function handleSignUp(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    if (!supabase) {
+      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return;
+    }
+
+    if (!email.trim() || !password.trim()) {
+      setError("Informe e-mail e senha para criar a conta.");
+      setAuthMessage("");
+      return;
+    }
+
+    setError("");
+    setAuthMessage("");
+    setAuthLoading(true);
+
+    const { error: signUpError } = await supabase.auth.signUp({
+      email,
+      password
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
+    } else {
+      setAuthMessage(
+        "Conta criada com sucesso. Agora você já pode entrar com seu e-mail e senha."
+      );
+    }
+
+    setAuthLoading(false);
+  }
+
+  async function handleGoogleLogin() {
+    if (!supabase) {
+      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return;
+    }
+
+    setError("");
+    setAuthMessage("");
+
+    const { error: googleError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: window.location.origin
+      }
+    });
+
+    if (googleError) {
+      setError(googleError.message);
+    }
+  }
+
+  async function handlePasswordReset() {
+    if (!supabase) {
+      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      return;
+    }
+
+    if (!email.trim()) {
+      setError("Informe seu e-mail para receber o link de recuperação.");
+      setAuthMessage("");
+      return;
+    }
+
+    setError("");
+    setAuthMessage("");
+    setAuthLoading(true);
+
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+      email,
+      {
+        redirectTo: window.location.origin
+      }
+    );
+
+    if (resetError) {
+      setError(resetError.message);
+    } else {
+      setAuthMessage("Enviamos um link de recuperação para o seu e-mail.");
     }
 
     setAuthLoading(false);
@@ -455,21 +546,55 @@ export default function Home() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#e5ddd5] px-5">
         <form
-          onSubmit={handleLogin}
+          onSubmit={authMode === "login" ? handleLogin : handleSignUp}
           className="w-full max-w-md rounded-lg bg-white p-6 shadow-soft"
         >
           <p className="text-sm font-semibold uppercase text-emerald-700">
             Central Comercial IA EAD
           </p>
           <h1 className="mt-2 text-2xl font-bold text-slate-950">
-            Acesse sua conta
+            {authMode === "login" ? "Acesse sua conta" : "Criar conta"}
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            Entre com e-mail e senha para salvar conversas e continuar
-            atendimentos antigos.
+            {authMode === "login"
+              ? "Entre para salvar conversas e continuar atendimentos antigos."
+              : "Cadastre seu acesso para manter seu histórico comercial salvo."}
           </p>
 
           <div className="mt-6 grid gap-4">
+            <div className="grid grid-cols-2 rounded-md bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode("login");
+                  setError("");
+                  setAuthMessage("");
+                }}
+                className={`min-h-10 rounded px-3 text-sm font-bold transition ${
+                  authMode === "login"
+                    ? "bg-white text-emerald-700 shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Entrar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode("signup");
+                  setError("");
+                  setAuthMessage("");
+                }}
+                className={`min-h-10 rounded px-3 text-sm font-bold transition ${
+                  authMode === "signup"
+                    ? "bg-white text-emerald-700 shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Criar conta
+              </button>
+            </div>
+
             <label className="grid gap-2">
               <span className="text-sm font-semibold text-slate-800">
                 E-mail
@@ -494,17 +619,50 @@ export default function Home() {
               />
             </label>
 
+            {authMode === "login" ? (
+              <button
+                type="button"
+                onClick={handlePasswordReset}
+                className="justify-self-start text-sm font-bold text-emerald-700 transition hover:text-emerald-800"
+              >
+                Esqueci minha senha
+              </button>
+            ) : null}
+
             {error ? (
               <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
                 {error}
               </div>
             ) : null}
 
+            {authMessage ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+                {authMessage}
+              </div>
+            ) : null}
+
             <button
               type="submit"
-              className="min-h-12 rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
+              className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
             >
-              Entrar
+              {authMode === "login" ? null : (
+                <UserPlus aria-hidden="true" className="h-4 w-4" />
+              )}
+              {authMode === "login" ? "Entrar" : "Criar conta"}
+            </button>
+
+            <div className="flex items-center gap-3 text-xs font-semibold uppercase text-slate-400">
+              <span className="h-px flex-1 bg-slate-200" />
+              ou
+              <span className="h-px flex-1 bg-slate-200" />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              className="min-h-12 rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+            >
+              Continuar com Google
             </button>
           </div>
         </form>
