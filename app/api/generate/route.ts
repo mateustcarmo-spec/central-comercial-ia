@@ -77,7 +77,8 @@ function isValidMessage(message: unknown): message is ChatMessage {
 
 export async function POST(request: Request) {
   try {
-    const { course, profile, objection, messages } = await request.json();
+    const { leadName, course, profile, objection, leadStatus, messages } =
+      await request.json();
 
     if (!course || !profile || !objection || !Array.isArray(messages)) {
       return NextResponse.json(
@@ -117,10 +118,14 @@ export async function POST(request: Request) {
       {
         role: "user",
         content: [
+          leadName ? `Nome do lead: ${leadName}` : "",
           `Curso: ${course}`,
           `Perfil do lead: ${profile}`,
-          `Objeção inicial: ${objection}`
-        ].join("\n")
+          `Objeção inicial: ${objection}`,
+          leadStatus ? `Status do lead: ${leadStatus}` : ""
+        ]
+          .filter(Boolean)
+          .join("\n")
       },
       ...validMessages.map<ChatCompletionMessageParam>((message) => ({
         role: message.role === "assistant" ? "assistant" : "user",

@@ -1,13 +1,13 @@
 "use client";
 
 import {
+  Bot,
   Check,
   Clipboard,
   Lightbulb,
-  MessageCircle,
+  RotateCcw,
   Send,
-  Sparkles,
-  Trash2
+  Sparkles
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,22 +15,66 @@ type ChatMessage = {
   id: string;
   role: "consultant" | "assistant";
   content: string;
+  createdAt?: string;
+};
+
+type LeadStatus = "Frio" | "Morno" | "Quente";
+
+type AssistantParts = {
+  leadMessage: string;
+  consultantTip: string;
+  probingQuestion: string;
 };
 
 const storageKey = "central-comercial-chat";
+const statusOptions: LeadStatus[] = ["Frio", "Morno", "Quente"];
 
-function extractConsultantSuggestion(content: string) {
-  const match = content.match(
-    /Dica para (?:o )?(?:consultor|vendedor):\s*([\s\S]*?)(?:\n\s*Pergunta de sondagem:|$)/i
-  );
+function extractSection(content: string, title: string, nextTitles: string[]) {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedNextTitles = nextTitles
+    .map((nextTitle) => nextTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const stop = escapedNextTitles ? `(?=\\n\\s*(?:${escapedNextTitles}):|$)` : "$";
+  const match = content.match(new RegExp(`${escapedTitle}:\\s*([\\s\\S]*?)${stop}`, "i"));
 
   return match?.[1]?.trim() || "";
 }
 
+function parseAssistantResponse(content: string): AssistantParts {
+  const leadMessage = extractSection(content, "Mensagem para o lead", [
+    "Dica para o consultor",
+    "Dica para o vendedor",
+    "Pergunta de sondagem"
+  ]);
+  const consultantTip =
+    extractSection(content, "Dica para o consultor", [
+      "Pergunta de sondagem"
+    ]) ||
+    extractSection(content, "Dica para o vendedor", ["Pergunta de sondagem"]);
+  const probingQuestion = extractSection(content, "Pergunta de sondagem", []);
+
+  return {
+    leadMessage: leadMessage || content,
+    consultantTip,
+    probingQuestion
+  };
+}
+
+function formatTime(value?: string) {
+  const date = value ? new Date(value) : new Date();
+
+  return new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
 export default function Home() {
+  const [leadName, setLeadName] = useState("");
   const [course, setCourse] = useState("");
   const [profile, setProfile] = useState("");
   const [objection, setObjection] = useState("");
+  const [leadStatus, setLeadStatus] = useState<LeadStatus>("Morno");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,12 +87,17 @@ export default function Home() {
     [messages]
   );
 
+  const hasLeadContext = useMemo(
+    () => Boolean(course.trim() && profile.trim() && objection.trim()),
+    [course, profile, objection]
+  );
+
   const canSend = useMemo(
     () =>
-      Boolean(course.trim() && profile.trim() && objection.trim()) &&
+      hasLeadContext &&
       !isLoading &&
       (!messages.length || Boolean(input.trim())),
-    [course, profile, objection, input, messages.length, isLoading]
+    [hasLeadContext, input, messages.length, isLoading]
   );
 
   useEffect(() => {
@@ -60,9 +109,11 @@ export default function Home() {
 
     try {
       const parsed = JSON.parse(storedChat);
+      setLeadName(parsed.leadName || "");
       setCourse(parsed.course || "");
       setProfile(parsed.profile || "");
       setObjection(parsed.objection || "");
+      setLeadStatus(statusOptions.includes(parsed.leadStatus) ? parsed.leadStatus : "Morno");
       setMessages(Array.isArray(parsed.messages) ? parsed.messages : []);
     } catch {
       window.localStorage.removeItem(storageKey);
@@ -72,9 +123,16 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(
       storageKey,
-      JSON.stringify({ course, profile, objection, messages })
+      JSON.stringify({
+        leadName,
+        course,
+        profile,
+        objection,
+        leadStatus,
+        messages
+      })
     );
-  }, [course, profile, objection, messages]);
+  }, [leadName, course, profile, objection, leadStatus, messages]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -87,9 +145,11 @@ export default function Home() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
+        leadName: leadName.trim(),
         course: course.trim(),
         profile: profile.trim(),
         objection: objection.trim(),
+        leadStatus,
         messages: nextMessages.map(({ role, content }) => ({ role, content }))
       })
     });
@@ -103,8 +163,13 @@ export default function Home() {
     return data.message as string;
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    if (!canSend) {
+      return;
+    }
+
     setError("");
     setCopied(false);
     setIsLoading(true);
@@ -112,13 +177,10 @@ export default function Home() {
     const consultantMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "consultant",
+      createdAt: new Date().toISOString(),
       content: messages.length
         ? input.trim()
-        : [
-            `Curso: ${course.trim()}`,
-            `Perfil do lead: ${profile.trim()}`,
-            `Objeção inicial: ${objection.trim()}`
-          ].join("\n")
+        : `Iniciar conversa com ${leadName.trim() || "o lead"} sobre ${course.trim()}.`
     };
 
     const nextMessages = [...messages, consultantMessage];
@@ -133,7 +195,8 @@ export default function Home() {
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: assistantMessage
+          content: assistantMessage,
+          createdAt: new Date().toISOString()
         }
       ]);
     } catch (requestError) {
@@ -152,7 +215,8 @@ export default function Home() {
       return;
     }
 
-    await navigator.clipboard.writeText(lastAssistantMessage.content);
+    const { leadMessage } = parseAssistantResponse(lastAssistantMessage.content);
+    await navigator.clipboard.writeText(leadMessage);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
@@ -166,37 +230,35 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100">
-      <section className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-5 py-6 sm:px-8 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase text-blue-700">
-              Comercial EAD
-            </p>
-            <h1 className="mt-2 text-3xl font-bold tracking-normal text-slate-950 sm:text-4xl">
+    <main className="min-h-screen bg-[#e5ddd5]">
+      <section className="mx-auto grid min-h-screen w-full max-w-7xl gap-0 bg-slate-100 lg:grid-cols-[380px_1fr] lg:p-5">
+        <aside className="order-2 border-r border-slate-200 bg-white p-5 lg:order-1 lg:rounded-l-lg lg:p-6">
+          <div className="mb-6">
+            <p className="text-sm font-semibold uppercase text-emerald-700">
               Central Comercial IA EAD
+            </p>
+            <h1 className="mt-2 text-2xl font-bold tracking-normal text-slate-950">
+              Contexto do Lead
             </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-600">
-              Use sondagem inteligente para criar conexão, entender o momento
-              do lead e conduzir a conversa com mais segurança.
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Informe os dados comerciais para a IA orientar a conversa com
+              sondagem e conexão.
             </p>
           </div>
-          <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
-            Chat com API protegida
-          </div>
-        </div>
-      </section>
 
-      <section className="mx-auto grid w-full max-w-6xl gap-6 px-5 py-6 sm:px-8 lg:grid-cols-[360px_1fr] lg:py-8">
-        <aside className="rounded-lg border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
-          <div className="mb-5 flex items-center gap-2 text-blue-700">
-            <MessageCircle aria-hidden="true" className="h-5 w-5" />
-            <h2 className="text-lg font-bold text-slate-950">
-              Contexto do lead
-            </h2>
-          </div>
+          <div className="grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-slate-800">
+                Nome do lead
+              </span>
+              <input
+                value={leadName}
+                onChange={(event) => setLeadName(event.target.value)}
+                placeholder="Ex.: Ana Paula"
+                className="min-h-11 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
+              />
+            </label>
 
-          <div className="grid gap-5">
             <label className="grid gap-2">
               <span className="text-sm font-semibold text-slate-800">
                 Curso
@@ -205,7 +267,7 @@ export default function Home() {
                 value={course}
                 onChange={(event) => setCourse(event.target.value)}
                 placeholder="Ex.: Administração"
-                className="min-h-12 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                className="min-h-11 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
               />
             </label>
 
@@ -217,8 +279,8 @@ export default function Home() {
                 value={profile}
                 onChange={(event) => setProfile(event.target.value)}
                 placeholder="Ex.: trabalha o dia todo e quer crescer na carreira"
-                rows={5}
-                className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                rows={4}
+                className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
               />
             </label>
 
@@ -230,101 +292,158 @@ export default function Home() {
                 value={objection}
                 onChange={(event) => setObjection(event.target.value)}
                 placeholder="Ex.: está inseguro com EAD"
-                rows={4}
-                className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                rows={3}
+                className="resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
               />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-slate-800">
+                Status do lead
+              </span>
+              <select
+                value={leadStatus}
+                onChange={(event) => setLeadStatus(event.target.value as LeadStatus)}
+                className="min-h-11 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:border-emerald-600 focus:ring-4 focus:ring-emerald-100"
+              >
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <button
               type="button"
-              onClick={clearConversation}
-              className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-bold text-slate-700 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700"
+              onClick={() => handleSubmit()}
+              disabled={!canSend || Boolean(messages.length)}
+              className="mt-2 flex min-h-12 items-center justify-center gap-2 rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <Trash2 aria-hidden="true" className="h-4 w-4" />
-              Limpar conversa
+              <Sparkles aria-hidden="true" className="h-4 w-4" />
+              Iniciar conversa
             </button>
           </div>
         </aside>
 
-        <section className="flex min-h-[620px] flex-col rounded-lg border border-slate-200 bg-white shadow-soft">
-          <div className="flex flex-col gap-3 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-950">
-                Conversa com sondagem inteligente
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-slate-500">
-                A IA orienta mensagem, ação prática e pergunta para entender
-                melhor o lead antes do fechamento.
-              </p>
+        <section className="order-1 flex min-h-screen flex-col bg-[#efe7dd] lg:order-2 lg:min-h-[calc(100vh-40px)] lg:rounded-r-lg">
+          <header className="flex items-center justify-between gap-3 border-b border-slate-300 bg-[#f0f2f5] px-4 py-3 sm:px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white">
+                <Bot aria-hidden="true" className="h-6 w-6" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-bold text-slate-950">
+                  Consultor IA Comercial
+                </h2>
+                <p className="text-sm font-medium text-emerald-700">
+                  online agora
+                </p>
+              </div>
             </div>
+
             <button
               type="button"
               onClick={copyLastAnswer}
               disabled={!lastAssistantMessage}
-              className="flex min-h-10 items-center justify-center gap-2 rounded-md border border-blue-200 px-4 text-sm font-bold text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              className="flex min-h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
             >
               {copied ? (
-                <Check aria-hidden="true" className="h-4 w-4" />
+                <Check aria-hidden="true" className="h-4 w-4 text-emerald-600" />
               ) : (
                 <Clipboard aria-hidden="true" className="h-4 w-4" />
               )}
-              {copied ? "Última resposta copiada" : "Copiar última resposta"}
+              <span className="hidden sm:inline">
+                {copied ? "Copiada" : "Copiar última resposta"}
+              </span>
             </button>
-          </div>
+          </header>
 
-          <div className="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-6">
-            <div className="grid gap-4">
+          <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+            <div className="mx-auto grid max-w-4xl gap-4">
               {messages.length ? (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${
-                      message.role === "assistant"
-                        ? "justify-start"
-                        : "justify-end"
-                    }`}
-                  >
-                    <article
-                      className={`max-w-[88%] rounded-lg border px-4 py-3 text-sm leading-6 shadow-sm sm:max-w-[76%] ${
+                messages.map((message) => {
+                  const assistantParts =
+                    message.role === "assistant"
+                      ? parseAssistantResponse(message.content)
+                      : null;
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${
                         message.role === "assistant"
-                          ? "border-blue-100 bg-white text-slate-800"
-                          : "border-blue-700 bg-blue-700 text-white"
+                          ? "justify-start"
+                          : "justify-end"
                       }`}
                     >
-                      <span
-                        className={`mb-2 block text-xs font-bold uppercase ${
+                      <article
+                        className={`max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm sm:max-w-[74%] ${
                           message.role === "assistant"
-                            ? "text-blue-700"
-                            : "text-blue-100"
+                            ? "rounded-tl-sm bg-white text-slate-800"
+                            : "rounded-tr-sm bg-[#dcf8c6] text-slate-900"
                         }`}
                       >
-                        {message.role === "assistant" ? "IA" : "Consultor"}
-                      </span>
-                      <p className="whitespace-pre-line">{message.content}</p>
-                      {message.role === "assistant" &&
-                      extractConsultantSuggestion(message.content) ? (
-                        <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-950">
-                          <span className="mb-1 flex items-center gap-2 font-bold text-blue-800">
-                            <Lightbulb aria-hidden="true" className="h-4 w-4" />
-                            Sugestão para o consultor
-                          </span>
-                          {extractConsultantSuggestion(message.content)}
-                        </div>
-                      ) : null}
-                    </article>
-                  </div>
-                ))
+                        {assistantParts ? (
+                          <div className="grid gap-3">
+                            <div>
+                              <span className="mb-1 block text-xs font-bold uppercase text-emerald-700">
+                                Mensagem para o lead
+                              </span>
+                              <p className="whitespace-pre-line">
+                                {assistantParts.leadMessage}
+                              </p>
+                            </div>
+
+                            {assistantParts.consultantTip ? (
+                              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-950">
+                                <span className="mb-1 flex items-center gap-2 text-xs font-bold uppercase text-amber-700">
+                                  <Lightbulb
+                                    aria-hidden="true"
+                                    className="h-4 w-4"
+                                  />
+                                  Dica para o consultor
+                                </span>
+                                <p>{assistantParts.consultantTip}</p>
+                              </div>
+                            ) : null}
+
+                            {assistantParts.probingQuestion ? (
+                              <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-950">
+                                <span className="mb-1 block text-xs font-bold uppercase text-sky-700">
+                                  Pergunta de sondagem
+                                </span>
+                                <p>{assistantParts.probingQuestion}</p>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-line">{message.content}</p>
+                        )}
+                        <time
+                          className={`mt-2 block text-right text-[11px] ${
+                            message.role === "assistant"
+                              ? "text-slate-400"
+                              : "text-emerald-900/60"
+                          }`}
+                        >
+                          {formatTime(message.createdAt)}
+                        </time>
+                      </article>
+                    </div>
+                  );
+                })
               ) : (
-                <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-5 text-center text-sm leading-6 text-slate-500">
-                  Preencha o contexto do lead e clique em Enviar para gerar a
-                  primeira abordagem com sondagem inteligente.
+                <div className="mx-auto mt-8 max-w-md rounded-lg bg-white/85 px-5 py-6 text-center text-sm leading-6 text-slate-600 shadow-sm">
+                  Preencha o contexto do lead e inicie a conversa para receber
+                  mensagem, dica prática e pergunta de sondagem.
                 </div>
               )}
 
               {isLoading ? (
                 <div className="flex justify-start">
-                  <div className="rounded-lg border border-blue-100 bg-white px-4 py-3 text-sm font-medium text-slate-500 shadow-sm">
-                    Gerando resposta curta para WhatsApp...
+                  <div className="rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-sm font-medium text-slate-500 shadow-sm">
+                    Consultor IA está digitando...
                   </div>
                 </div>
               ) : null}
@@ -334,38 +453,38 @@ export default function Home() {
 
           <form
             onSubmit={handleSubmit}
-            className="border-t border-slate-200 bg-white p-4 sm:p-5"
+            className="border-t border-slate-300 bg-[#f0f2f5] p-3 sm:p-4"
           >
             {error ? (
-              <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+              <div className="mx-auto mb-3 max-w-4xl rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
                 {error}
               </div>
             ) : null}
 
-            <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="mx-auto flex max-w-4xl items-end gap-2">
+              <button
+                type="button"
+                onClick={clearConversation}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm transition hover:text-red-600"
+                title="Limpar conversa"
+              >
+                <RotateCcw aria-hidden="true" className="h-5 w-5" />
+              </button>
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder={
-                  messages.length
-                    ? "Digite a dúvida ou resposta do lead..."
-                    : "A primeira mensagem usa o contexto inicial. Clique em Enviar."
-                }
-                rows={3}
+                placeholder="Digite a resposta ou dúvida do lead..."
+                rows={1}
                 disabled={!messages.length}
-                className="min-h-24 flex-1 resize-none rounded-md border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-500"
+                className="max-h-32 min-h-11 flex-1 resize-none rounded-2xl border border-transparent bg-white px-4 py-3 text-sm text-slate-950 shadow-sm outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 disabled:bg-slate-100 disabled:text-slate-500"
               />
               <button
                 type="submit"
                 disabled={!canSend}
-                className="flex min-h-12 items-center justify-center gap-2 rounded-md bg-blue-700 px-6 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:self-end"
+                className="flex min-h-11 items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:px-5"
               >
-                {messages.length ? (
-                  <Send aria-hidden="true" className="h-4 w-4" />
-                ) : (
-                  <Sparkles aria-hidden="true" className="h-4 w-4" />
-                )}
-                Enviar
+                <Send aria-hidden="true" className="h-4 w-4" />
+                <span className="hidden sm:inline">Enviar</span>
               </button>
             </div>
           </form>
