@@ -2,6 +2,7 @@
 
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import {
+  BarChart3,
   Bot,
   Check,
   Clipboard,
@@ -13,6 +14,7 @@ import {
   Sparkles,
   UserPlus
 } from "lucide-react";
+import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ChatMessage = {
@@ -49,9 +51,16 @@ type AssistantParts = {
 };
 
 const statusOptions: LeadStatus[] = ["Frio", "Morno", "Quente"];
+const supabaseUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://example.supabase.co";
+const supabaseAnonKey =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "public-anon-key";
+const isSupabaseConfigured = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  supabaseUrl,
+  supabaseAnonKey
 );
 
 function extractSection(content: string, title: string, nextTitles: string[]) {
@@ -146,6 +155,12 @@ export default function Home() {
   );
 
   useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setError("Configure NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY para acessar a Central.");
+      setAuthLoading(false);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
       setAuthLoading(false);
@@ -646,14 +661,23 @@ export default function Home() {
                 Contexto do Lead
               </h1>
             </div>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
-              title="Sair"
-            >
-              <LogOut aria-hidden="true" className="h-5 w-5" />
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Link
+                href="/dashboard"
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                title="Dashboard"
+              >
+                <BarChart3 aria-hidden="true" className="h-5 w-5" />
+              </Link>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                title="Sair"
+              >
+                <LogOut aria-hidden="true" className="h-5 w-5" />
+              </button>
+            </div>
           </div>
 
           <div className="grid gap-4">
