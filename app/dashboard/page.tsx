@@ -6,6 +6,7 @@ import {
   BarChart3,
   Bot,
   CalendarDays,
+  Clock,
   Flame,
   LogOut,
   MessageCircle,
@@ -36,6 +37,7 @@ import {
 
 type PeriodKey = "today" | "7d" | "30d";
 type LeadStatus = "Frio" | "Morno" | "Quente";
+type UserRole = "admin" | "consultor";
 
 type ConversationRow = {
   id: string;
@@ -58,11 +60,27 @@ type MessageRow = {
   created_at: string;
 };
 
+type ProfileRow = {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  role: UserRole | null;
+  access_count: number | null;
+  last_access_at: string | null;
+  ai_model: string | null;
+};
+
 type RankingRow = {
   id: string;
   name: string;
+  role: UserRole;
+  accesses: number;
+  lastAccess: string | null;
+  leads: number;
   conversations: number;
   messages: number;
+  aiMessages: number;
+  aiModel: string;
   score: number;
 };
 
@@ -118,9 +136,24 @@ function compactNumber(value: number) {
   }).format(value);
 }
 
-function collaboratorName(userId: string, user: User | null, index: number) {
+function collaboratorName(
+  userId: string,
+  user: User | null,
+  profiles: Map<string, ProfileRow>,
+  index: number
+) {
+  const profile = profiles.get(userId);
+
+  if (profile?.display_name) {
+    return profile.display_name;
+  }
+
+  if (profile?.email) {
+    return profile.email;
+  }
+
   if (user?.id === userId) {
-    return user.email || "Você";
+    return user.email || "Voce";
   }
 
   return `Colaborador ${index + 1}`;
@@ -156,6 +189,8 @@ function topItems(items: (string | null)[], fallback: string) {
 
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [currentProfile, setCurrentProfile] = useState<ProfileRow | null>(null);
+  const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [authLoading, setAuthLoading] = useState(true);
   const [period, setPeriod] = useState<PeriodKey>("7d");
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
@@ -186,54 +221,84 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user) {
+      setCurrentProfile(null);
+      setProfiles([]);
       setConversations([]);
       setMessages([]);
       return;
     }
 
     const periodStart = getPeriodStart(period);
+    const userId = user.id;
     setError("");
     setLoadingData(true);
 
-    Promise.all([
-      supabase
-        .from("conversations")
-        .select(
-          "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
-        )
-        .gte("created_at", periodStart)
-        .order("updated_at", { ascending: false }),
-      supabase
-        .from("messages")
-        .select("id, user_id, conversation_id, role, content, created_at")
-        .gte("created_at", periodStart)
-        .order("created_at", { ascending: false })
-    ])
-      .then(([conversationResult, messageResult]) => {
-        if (conversationResult.error) {
-          throw new Error(conversationResult.error.message);
-        }
+    async function loadDashboardData() {
+      await supabase.rpc("register_profile_access").then(() => undefined);
 
-        if (messageResult.error) {
-          throw new Error(messageResult.error.message);
-        }
+      const [profileResult, profileListResult, conversationResult, messageResult] =
+        await Promise.all([
+          supabase
+            .from("profiles")
+            .select("id, email, display_name, role, access_count, last_access_at, ai_model")
+            .eq("id", userId)
+            .maybeSingle(),
+          supabase
+            .from("profiles")
+            .select("id, email, display_name, role, access_count, last_access_at, ai_model")
+            .order("email", { ascending: true }),
+          supabase
+            .from("conversations")
+            .select(
+              "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
+            )
+            .gte("created_at", periodStart)
+            .order("updated_at", { ascending: false }),
+          supabase
+            .from("messages")
+            .select("id, user_id, conversation_id, role, content, created_at")
+            .gte("created_at", periodStart)
+            .order("created_at", { ascending: false })
+        ]);
 
-        setConversations((conversationResult.data ?? []) as ConversationRow[]);
-        setMessages((messageResult.data ?? []) as MessageRow[]);
-      })
+      if (profileResult.error) {
+        throw new Error(profileResult.error.message);
+      }
+
+      if (profileListResult.error) {
+        throw new Error(profileListResult.error.message);
+      }
+
+      if (conversationResult.error) {
+        throw new Error(conversationResult.error.message);
+      }
+
+      if (messageResult.error) {
+        throw new Error(messageResult.error.message);
+      }
+
+      setCurrentProfile((profileResult.data as ProfileRow | null) ?? null);
+      setProfiles((profileListResult.data ?? []) as ProfileRow[]);
+      setConversations((conversationResult.data ?? []) as ConversationRow[]);
+      setMessages((messageResult.data ?? []) as MessageRow[]);
+    }
+
+    loadDashboardData()
       .catch((loadError) => {
         setError(
           loadError instanceof Error
             ? loadError.message
-            : "Não foi possível carregar o dashboard."
+            : "Nao foi possivel carregar o dashboard."
         );
       })
       .finally(() => setLoadingData(false));
   }, [period, user]);
 
   const analytics = useMemo(() => {
+    const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
     const userIds = Array.from(
       new Set([
+        ...profiles.map((profile) => profile.id),
         ...conversations.map((conversation) => conversation.user_id),
         ...messages.map((message) => message.user_id)
       ])
@@ -242,25 +307,41 @@ export default function DashboardPage() {
     const names = new Map(
       userIds.map((userId, index) => [
         userId,
-        collaboratorName(userId, user, index)
+        collaboratorName(userId, user, profileById, index)
       ])
     );
 
     const ranking: RankingRow[] = userIds
       .map((userId) => {
-        const conversationCount = conversations.filter(
+        const userConversations = conversations.filter(
           (conversation) => conversation.user_id === userId
-        ).length;
-        const messageCount = messages.filter(
+        );
+        const userMessages = messages.filter(
           (message) => message.user_id === userId
+        );
+        const aiMessages = userMessages.filter(
+          (message) => message.role === "assistant"
         ).length;
+        const leads = new Set(
+          userConversations.map(
+            (conversation) => conversation.lead_name?.trim() || conversation.id
+          )
+        ).size;
+        const profile = profileById.get(userId);
+        const role: UserRole = profile?.role === "admin" ? "admin" : "consultor";
 
         return {
           id: userId,
           name: names.get(userId) || "Colaborador",
-          conversations: conversationCount,
-          messages: messageCount,
-          score: conversationCount * 2 + messageCount
+          role,
+          accesses: profile?.access_count ?? 0,
+          lastAccess: profile?.last_access_at ?? null,
+          leads,
+          conversations: userConversations.length,
+          messages: userMessages.length,
+          aiMessages,
+          aiModel: profile?.ai_model || "gpt-4o-mini",
+          score: userConversations.length * 2 + userMessages.length + aiMessages
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -275,14 +356,19 @@ export default function DashboardPage() {
       conversas: row.conversations
     }));
 
+    const accessesByCollaborator = ranking.map((row) => ({
+      name: row.name,
+      acessos: row.accesses
+    }));
+
     const courses = topItems(
       conversations.map((conversation) => conversation.course),
-      "Curso não informado"
+      "Curso nao informado"
     );
 
     const objections = topItems(
       conversations.map((conversation) => conversation.objection),
-      "Objeção não informada"
+      "Objecao nao informada"
     );
 
     const leadStatus = (["Frio", "Morno", "Quente"] as LeadStatus[]).map(
@@ -304,6 +390,8 @@ export default function DashboardPage() {
       totalUsers: userIds.length,
       totalConversations: conversations.length,
       totalMessages: messages.length,
+      totalAccesses: ranking.reduce((sum, row) => sum + row.accesses, 0),
+      totalLeads: ranking.reduce((sum, row) => sum + row.leads, 0),
       ranking,
       activeCollaborator: ranking[0]?.name || "Sem dados",
       averageMessages,
@@ -313,9 +401,12 @@ export default function DashboardPage() {
       leadStatus,
       messagesByCollaborator,
       conversationsByCollaborator,
+      accessesByCollaborator,
       latestConversations: conversations.slice(0, 6)
     };
-  }, [conversations, messages, user]);
+  }, [conversations, messages, profiles, user]);
+
+  const isAdmin = currentProfile?.role === "admin";
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -334,24 +425,24 @@ export default function DashboardPage() {
     return (
       <main className="min-h-screen bg-[#e5ddd5]">
         <section className="flex min-h-screen items-center justify-center px-5">
-        <div className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-soft">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
-            <BarChart3 aria-hidden="true" className="h-7 w-7" />
+          <div className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-soft">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+              <BarChart3 aria-hidden="true" className="h-7 w-7" />
+            </div>
+            <h1 className="mt-5 text-2xl font-bold text-slate-950">
+              Dashboard protegido
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-slate-500">
+              Entre na Central Comercial IA para visualizar indicadores,
+              rankings e atendimentos.
+            </p>
+            <Link
+              href="/"
+              className="mt-6 inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
+            >
+              Entrar na Central
+            </Link>
           </div>
-          <h1 className="mt-5 text-2xl font-bold text-slate-950">
-            Dashboard protegido
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
-            Entre na Central Comercial IA para visualizar indicadores,
-            rankings e atendimentos.
-          </p>
-          <Link
-            href="/"
-            className="mt-6 inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
-          >
-            Entrar na Central
-          </Link>
-        </div>
         </section>
         <SystemFooter />
       </main>
@@ -370,7 +461,9 @@ export default function DashboardPage() {
                 </p>
                 <h1 className="mt-2 text-2xl font-bold">Dashboard</h1>
                 <p className="mt-2 text-sm leading-6 text-slate-500">
-                  Visão gerencial de conversas, leads e uso da IA.
+                  {isAdmin
+                    ? "Visao gerencial de conversas, leads e uso da IA."
+                    : "Visao individual dos seus atendimentos e uso da IA."}
                 </p>
               </div>
               <button
@@ -399,7 +492,7 @@ export default function DashboardPage() {
 
             <div className="mt-6 rounded-lg border border-emerald-100 bg-emerald-50 p-4">
               <p className="text-sm font-bold text-emerald-950">
-                Filtro por período
+                Filtro por periodo
               </p>
               <div className="mt-3 grid gap-2">
                 {periodOptions.map((option) => (
@@ -428,11 +521,11 @@ export default function DashboardPage() {
                   {periodOptions.find((option) => option.key === period)?.label}
                 </p>
                 <h2 className="mt-1 text-2xl font-bold">
-                  Painel gerencial comercial
+                  {isAdmin ? "Painel gerencial comercial" : "Painel do consultor"}
                 </h2>
               </div>
               <div className="rounded-md bg-[#dcf8c6] px-4 py-3 text-sm font-bold text-emerald-950">
-                {user.email}
+                {user.email} · {isAdmin ? "admin" : "consultor"}
               </div>
             </header>
 
@@ -443,10 +536,10 @@ export default function DashboardPage() {
                 </div>
               ) : null}
 
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <MetricCard
                   icon={<Users className="h-5 w-5" />}
-                  label="Total de usuários"
+                  label={isAdmin ? "Total de usuarios" : "Usuario"}
                   value={compactNumber(analytics.totalUsers)}
                 />
                 <MetricCard
@@ -460,26 +553,36 @@ export default function DashboardPage() {
                   value={compactNumber(analytics.totalMessages)}
                 />
                 <MetricCard
+                  icon={<Activity className="h-5 w-5" />}
+                  label="Total de acessos"
+                  value={compactNumber(analytics.totalAccesses)}
+                />
+                <MetricCard
                   icon={<Flame className="h-5 w-5" />}
                   label="Colaborador mais ativo"
                   value={analytics.activeCollaborator}
                 />
                 <MetricCard
-                  icon={<Activity className="h-5 w-5" />}
-                  label="Média de mensagens por conversa"
-                  value={analytics.averageMessages.toFixed(1)}
+                  icon={<Users className="h-5 w-5" />}
+                  label="Leads atendidos"
+                  value={compactNumber(analytics.totalLeads)}
                 />
                 <MetricCard
                   icon={<Bot className="h-5 w-5" />}
                   label="Total de atendimentos IA"
                   value={compactNumber(analytics.assistantMessages)}
                 />
+                <MetricCard
+                  icon={<MessagesSquare className="h-5 w-5" />}
+                  label="Media de mensagens por conversa"
+                  value={analytics.averageMessages.toFixed(1)}
+                />
               </div>
 
               <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
                 <Panel
                   title="Ranking de colaboradores por uso"
-                  subtitle="Pontuação considera conversas e mensagens no período."
+                  subtitle="Pontuacao considera conversas, mensagens e uso da IA no periodo."
                 >
                   <div className="grid gap-3">
                     {analytics.ranking.length ? (
@@ -496,7 +599,10 @@ export default function DashboardPage() {
                               {row.name}
                             </p>
                             <p className="text-xs font-medium text-slate-500">
-                              {row.conversations} conversas · {row.messages} mensagens
+                              {row.conversations} conversas · {row.messages} mensagens · {row.aiMessages} IA
+                            </p>
+                            <p className="mt-1 text-xs font-medium text-slate-400">
+                              {row.accesses} acessos · ultimo acesso {row.lastAccess ? formatDate(row.lastAccess) : "sem registro"}
                             </p>
                           </div>
                           <strong className="text-lg text-emerald-700">
@@ -505,7 +611,7 @@ export default function DashboardPage() {
                         </div>
                       ))
                     ) : (
-                      <EmptyState text="Sem colaboradores no período." />
+                      <EmptyState text="Sem colaboradores no periodo." />
                     )}
                   </div>
                 </Panel>
@@ -537,7 +643,23 @@ export default function DashboardPage() {
                 </Panel>
               </div>
 
-              <div className="grid gap-5 xl:grid-cols-2">
+              <div className="grid gap-5 xl:grid-cols-3">
+                <Panel title="Acessos por colaborador">
+                  <ChartFrame>
+                    <BarChart data={analytics.accessesByCollaborator}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" tickLine={false} axisLine={false} />
+                      <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                      <Tooltip />
+                      <Bar
+                        dataKey="acessos"
+                        fill="#0ea5e9"
+                        radius={[6, 6, 0, 0]}
+                      />
+                    </BarChart>
+                  </ChartFrame>
+                </Panel>
+
                 <Panel title="Conversas por colaborador">
                   <ChartFrame>
                     <BarChart data={analytics.conversationsByCollaborator}>
@@ -573,8 +695,38 @@ export default function DashboardPage() {
                 </Panel>
               </div>
 
-              <div className="grid gap-5 xl:grid-cols-3">
-                <Panel title="Últimas conversas">
+              <div className="grid gap-5 xl:grid-cols-2">
+                <Panel title="Usuarios e atividade">
+                  <div className="grid gap-3">
+                    {analytics.ranking.length ? (
+                      analytics.ranking.map((row) => (
+                        <div
+                          key={row.id}
+                          className="rounded-md border border-slate-200 bg-white p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-bold text-slate-950">
+                                {row.name}
+                              </p>
+                              <p className="mt-1 text-xs font-medium text-slate-500">
+                                {row.role} · {row.leads} leads atendidos · IA: {row.aiModel}
+                              </p>
+                            </div>
+                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
+                              <Clock aria-hidden="true" className="h-3 w-3" />
+                              {row.lastAccess ? formatDate(row.lastAccess) : "sem acesso"}
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <EmptyState text="Nenhum usuario encontrado." />
+                    )}
+                  </div>
+                </Panel>
+
+                <Panel title="Ultimas conversas">
                   <div className="grid gap-3">
                     {analytics.latestConversations.length ? (
                       analytics.latestConversations.map((conversation) => (
@@ -588,7 +740,7 @@ export default function DashboardPage() {
                                 {conversation.lead_name || "Lead sem nome"}
                               </p>
                               <p className="truncate text-sm text-slate-500">
-                                {conversation.course || "Curso não informado"}
+                                {conversation.course || "Curso nao informado"}
                               </p>
                             </div>
                             <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
@@ -605,12 +757,14 @@ export default function DashboardPage() {
                     )}
                   </div>
                 </Panel>
+              </div>
 
+              <div className="grid gap-5 xl:grid-cols-2">
                 <Panel title="Cursos mais consultados">
                   <RankList data={analytics.courses} icon={<Search className="h-4 w-4" />} />
                 </Panel>
 
-                <Panel title="Objeções mais comuns">
+                <Panel title="Objecoes mais comuns">
                   <RankList
                     data={analytics.objections}
                     icon={<Sparkles className="h-4 w-4" />}

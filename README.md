@@ -34,4 +34,20 @@ npm run dev
 
 A chave da OpenAI fica apenas no backend, dentro da rota `app/api/generate/route.ts`, usando a variavel de ambiente `OPENAI_API_KEY`.
 
-O Supabase usa Auth por e-mail e senha. As tabelas `conversations` e `messages` devem ter `user_id` e regras de RLS para que cada usuario veja apenas os proprios registros.
+O Supabase usa Auth por e-mail e senha. A tabela `profiles` guarda o papel de cada pessoa (`admin` ou `consultor`) e as tabelas `conversations` e `messages` usam `user_id` com RLS.
+
+Para habilitar o dashboard gerencial, aplique a migracao:
+
+```sql
+supabase/migrations/202605220001_admin_dashboard_rls.sql
+```
+
+Depois promova os usuarios administradores no Supabase SQL Editor:
+
+```sql
+update public.profiles
+set role = 'admin'
+where email = 'admin@exemplo.com';
+```
+
+Usuarios `admin` veem todos os usuarios, conversas, mensagens, ranking e analytics. Usuarios `consultor` continuam vendo apenas os proprios dados.
