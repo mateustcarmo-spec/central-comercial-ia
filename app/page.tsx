@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { SystemFooter } from "./components/SystemFooter";
 
 type ChatMessage = {
   id: string;
@@ -522,7 +523,8 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#e5ddd5] px-5">
+      <main className="min-h-screen bg-[#e5ddd5]">
+        <section className="flex min-h-screen items-center justify-center px-5">
         <form
           onSubmit={authMode === "login" ? handleLogin : handleSignUp}
           className="w-full max-w-md rounded-lg bg-white p-6 shadow-soft"
@@ -644,6 +646,8 @@ export default function Home() {
             </button>
           </div>
         </form>
+        </section>
+        <SystemFooter />
       </main>
     );
   }
@@ -971,6 +975,7 @@ export default function Home() {
           </form>
         </section>
       </section>
+      <SystemFooter />
     </main>
   );
 }

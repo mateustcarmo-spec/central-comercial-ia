@@ -17,6 +17,7 @@ import {
 import Link from "next/link";
 import type React from "react";
 import { useEffect, useMemo, useState } from "react";
+import { SystemFooter } from "../components/SystemFooter";
 import {
   Bar,
   BarChart,
@@ -331,8 +332,9 @@ export default function DashboardPage() {
 
   if (!user) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#e5ddd5] px-5">
-        <section className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-soft">
+      <main className="min-h-screen bg-[#e5ddd5]">
+        <section className="flex min-h-screen items-center justify-center px-5">
+        <div className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-soft">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
             <BarChart3 aria-hidden="true" className="h-7 w-7" />
           </div>
@@ -349,7 +351,9 @@ export default function DashboardPage() {
           >
             Entrar na Central
           </Link>
+        </div>
         </section>
+        <SystemFooter />
       </main>
     );
   }
@@ -623,6 +627,7 @@ export default function DashboardPage() {
           </section>
         </div>
       </section>
+      <SystemFooter />
     </main>
   );
 }
