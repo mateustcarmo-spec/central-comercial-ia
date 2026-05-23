@@ -3,6 +3,7 @@ create table if not exists public.profiles (
   email text,
   display_name text,
   role text not null default 'consultor',
+  profile_type text,
   access_count integer not null default 0,
   last_access_at timestamptz,
   ai_model text not null default 'gpt-4o-mini',
@@ -15,6 +16,7 @@ alter table public.profiles
   add column if not exists email text,
   add column if not exists display_name text,
   add column if not exists role text not null default 'consultor',
+  add column if not exists profile_type text,
   add column if not exists access_count integer not null default 0,
   add column if not exists last_access_at timestamptz,
   add column if not exists ai_model text not null default 'gpt-4o-mini',
@@ -31,6 +33,19 @@ begin
   ) then
     alter table public.profiles
       add constraint profiles_role_check check (role in ('admin', 'consultor'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'profiles_profile_type_check'
+      and conrelid = 'public.profiles'::regclass
+  ) then
+    alter table public.profiles
+      add constraint profiles_profile_type_check check (profile_type is null or profile_type in ('admin', 'consultor'));
   end if;
 end $$;
 
@@ -60,8 +75,8 @@ as $$
   select exists (
     select 1
     from public.profiles
-    where id = auth.uid()
-      and role = 'admin'
+    where (id = auth.uid() or email = auth.jwt()->>'email')
+      and (role = 'admin' or profile_type = 'admin')
   );
 $$;
 
@@ -150,7 +165,14 @@ create policy "profiles_select_own_or_admin"
 on public.profiles
 for select
 to authenticated
-using (id = auth.uid() or public.is_admin());
+using (id = auth.uid() or email = auth.jwt()->>'email' or public.is_admin());
+
+drop policy if exists "profiles_insert_own" on public.profiles;
+create policy "profiles_insert_own"
+on public.profiles
+for insert
+to authenticated
+with check (id = auth.uid() and coalesce(role, 'consultor') = 'consultor');
 
 drop policy if exists "profiles_admin_update" on public.profiles;
 create policy "profiles_admin_update"

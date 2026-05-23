@@ -65,6 +65,7 @@ type ProfileRow = {
   email: string | null;
   display_name: string | null;
   role: UserRole | null;
+  profile_type?: UserRole | null;
   access_count: number | null;
   last_access_at: string | null;
   ai_model: string | null;
@@ -92,6 +93,8 @@ const isSupabaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const profileSelect =
+  "id, email, display_name, role, profile_type, access_count, last_access_at, ai_model";
 
 const legacyStorageKeys = [
   "role",
@@ -160,6 +163,14 @@ function normalizeRole(role: string | null | undefined): UserRole | null {
   return role === "admin" || role === "consultor" ? role : null;
 }
 
+function profileRole(profile: ProfileRow | null | undefined): UserRole | null {
+  return normalizeRole(profile?.role) ?? normalizeRole(profile?.profile_type);
+}
+
+function isProfileAdmin(profile: ProfileRow | null | undefined) {
+  return profileRole(profile) === "admin";
+}
+
 function roleLabel(role: UserRole | null | undefined) {
   return role === "admin" || role === "consultor" ? role : "";
 }
@@ -215,6 +226,44 @@ function topItems(items: (string | null)[], fallback: string) {
     .slice(0, 6);
 }
 
+async function loadOrCreateCurrentProfile(user: User) {
+  const email = user.email?.trim() || null;
+  const profileQuery = supabase
+    .from("profiles")
+    .select(profileSelect)
+    .or(email ? `id.eq.${user.id},email.eq.${email}` : `id.eq.${user.id}`)
+    .limit(1)
+    .maybeSingle();
+
+  const { data, error } = await profileQuery;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (data) {
+    return data as ProfileRow;
+  }
+
+  const { data: createdProfile, error: createError } = await supabase
+    .from("profiles")
+    .insert({
+      id: user.id,
+      email,
+      display_name:
+        user.user_metadata?.name || user.user_metadata?.full_name || null,
+      role: "consultor"
+    })
+    .select(profileSelect)
+    .single();
+
+  if (createError) {
+    throw new Error(createError.message);
+  }
+
+  return createdProfile as ProfileRow;
+}
+
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [currentProfile, setCurrentProfile] = useState<ProfileRow | null>(null);
@@ -260,41 +309,41 @@ export default function DashboardPage() {
     }
 
     const periodStart = getPeriodStart(period);
+    const activeUser = user;
     const userId = user.id;
     setError("");
     setLoadingData(true);
 
     async function loadDashboardData() {
       await supabase.rpc("register_profile_access").then(() => undefined);
+      const currentUserProfile = await loadOrCreateCurrentProfile(activeUser);
+      const isCurrentUserAdmin = isProfileAdmin(currentUserProfile);
 
-      const [profileResult, profileListResult, conversationResult, messageResult] =
-        await Promise.all([
-          supabase
-            .from("profiles")
-            .select("id, email, display_name, role, access_count, last_access_at, ai_model")
-            .eq("id", userId)
-            .maybeSingle(),
-          supabase
-            .from("profiles")
-            .select("id, email, display_name, role, access_count, last_access_at, ai_model")
-            .order("email", { ascending: true }),
-          supabase
-            .from("conversations")
-            .select(
-              "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
-            )
-            .gte("created_at", periodStart)
-            .order("updated_at", { ascending: false }),
-          supabase
-            .from("messages")
-            .select("id, user_id, conversation_id, role, content, created_at")
-            .gte("created_at", periodStart)
-            .order("created_at", { ascending: false })
-        ]);
+      let profileListQuery = supabase
+        .from("profiles")
+        .select(profileSelect)
+        .order("email", { ascending: true });
+      let conversationQuery = supabase
+        .from("conversations")
+        .select(
+          "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
+        )
+        .gte("created_at", periodStart)
+        .order("updated_at", { ascending: false });
+      let messageQuery = supabase
+        .from("messages")
+        .select("id, user_id, conversation_id, role, content, created_at")
+        .gte("created_at", periodStart)
+        .order("created_at", { ascending: false });
 
-      if (profileResult.error) {
-        throw new Error(profileResult.error.message);
+      if (!isCurrentUserAdmin) {
+        profileListQuery = profileListQuery.eq("id", userId);
+        conversationQuery = conversationQuery.eq("user_id", userId);
+        messageQuery = messageQuery.eq("user_id", userId);
       }
+
+      const [profileListResult, conversationResult, messageResult] =
+        await Promise.all([profileListQuery, conversationQuery, messageQuery]);
 
       if (profileListResult.error) {
         throw new Error(profileListResult.error.message);
@@ -308,7 +357,7 @@ export default function DashboardPage() {
         throw new Error(messageResult.error.message);
       }
 
-      setCurrentProfile((profileResult.data as ProfileRow | null) ?? null);
+      setCurrentProfile(currentUserProfile);
       setProfiles((profileListResult.data ?? []) as ProfileRow[]);
       setConversations((conversationResult.data ?? []) as ConversationRow[]);
       setMessages((messageResult.data ?? []) as MessageRow[]);
@@ -331,13 +380,15 @@ export default function DashboardPage() {
         {
           event: "*",
           schema: "public",
-          table: "profiles",
-          filter: `id=eq.${userId}`
+          table: "profiles"
         },
         (payload) => {
           const updatedProfile = payload.new as ProfileRow | null;
+          const updatedProfileBelongsToUser =
+            updatedProfile?.id === userId ||
+            Boolean(user.email && updatedProfile?.email === user.email);
 
-          if (!updatedProfile) {
+          if (!updatedProfile && payload.old && (payload.old as ProfileRow).id === userId) {
             setCurrentProfile(null);
             setProfiles((current) =>
               current.filter((profile) => profile.id !== userId)
@@ -345,17 +396,23 @@ export default function DashboardPage() {
             return;
           }
 
-          setCurrentProfile((previousProfile) => {
-            const roleChanged =
-              Boolean(previousProfile) &&
-              normalizeRole(previousProfile?.role) !== normalizeRole(updatedProfile.role);
+          if (!updatedProfile) {
+            return;
+          }
 
-            if (roleChanged) {
-              window.setTimeout(() => setDataVersion((version) => version + 1), 0);
-            }
+          if (updatedProfileBelongsToUser) {
+            setCurrentProfile((previousProfile) => {
+              const roleChanged =
+                Boolean(previousProfile) &&
+                profileRole(previousProfile) !== profileRole(updatedProfile);
 
-            return updatedProfile;
-          });
+              if (roleChanged) {
+                window.setTimeout(() => setDataVersion((version) => version + 1), 0);
+              }
+
+              return updatedProfile;
+            });
+          }
           setProfiles((current) => {
             const exists = current.some((profile) => profile.id === updatedProfile.id);
 
@@ -410,7 +467,7 @@ export default function DashboardPage() {
           )
         ).size;
         const profile = profileById.get(userId);
-        const role = normalizeRole(profile?.role);
+        const role = profileRole(profile);
 
         return {
           id: userId,
@@ -497,7 +554,7 @@ export default function DashboardPage() {
     };
   }, [conversations, messages, profiles, user]);
 
-  const currentRole = normalizeRole(currentProfile?.role);
+  const currentRole = profileRole(currentProfile);
   const isAdmin = currentRole === "admin";
   const currentRoleLabel = roleLabel(currentRole);
 
@@ -614,7 +671,11 @@ export default function DashboardPage() {
                   {periodOptions.find((option) => option.key === period)?.label}
                 </p>
                 <h2 className="mt-1 text-2xl font-bold">
-                  {isAdmin ? "Painel gerencial comercial" : "Painel individual"}
+                  {isAdmin
+                    ? "Painel gerencial comercial"
+                    : currentRole === "consultor"
+                      ? "Painel do consultor"
+                      : "Dashboard"}
                 </h2>
               </div>
               <div className="rounded-md bg-[#dcf8c6] px-4 py-3 text-sm font-bold text-emerald-950">
