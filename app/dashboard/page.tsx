@@ -73,7 +73,7 @@ type ProfileRow = {
 type RankingRow = {
   id: string;
   name: string;
-  role: UserRole;
+  role: UserRole | null;
   accesses: number;
   lastAccess: string | null;
   leads: number;
@@ -92,6 +92,15 @@ const isSupabaseConfigured = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const legacyStorageKeys = [
+  "role",
+  "userRole",
+  "profile",
+  "currentProfile",
+  "supabase.auth.role",
+  "central-comercial-role"
+];
 
 const periodOptions: { key: PeriodKey; label: string; days: number }[] = [
   { key: "today", label: "Hoje", days: 1 },
@@ -134,6 +143,33 @@ function compactNumber(value: number) {
     notation: value >= 10000 ? "compact" : "standard",
     maximumFractionDigits: 1
   }).format(value);
+}
+
+function clearLegacyAuthCache() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  legacyStorageKeys.forEach((key) => {
+    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
+  });
+}
+
+function normalizeRole(role: string | null | undefined): UserRole | null {
+  return role === "admin" || role === "consultor" ? role : null;
+}
+
+function roleLabel(role: UserRole | null | undefined) {
+  if (role === "admin") {
+    return "admin";
+  }
+
+  if (role === "consultor") {
+    return "consultor";
+  }
+
+  return "perfil nao definido";
 }
 
 function collaboratorName(
@@ -196,6 +232,7 @@ export default function DashboardPage() {
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [loadingData, setLoadingData] = useState(false);
+  const [dataVersion, setDataVersion] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -204,6 +241,8 @@ export default function DashboardPage() {
       setAuthLoading(false);
       return;
     }
+
+    clearLegacyAuthCache();
 
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
@@ -292,7 +331,58 @@ export default function DashboardPage() {
         );
       })
       .finally(() => setLoadingData(false));
-  }, [period, user]);
+
+    const profileChannel = supabase
+      .channel(`dashboard-profile-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "profiles",
+          filter: `id=eq.${userId}`
+        },
+        (payload) => {
+          const updatedProfile = payload.new as ProfileRow | null;
+
+          if (!updatedProfile) {
+            setCurrentProfile(null);
+            setProfiles((current) =>
+              current.filter((profile) => profile.id !== userId)
+            );
+            return;
+          }
+
+          setCurrentProfile((previousProfile) => {
+            const roleChanged =
+              Boolean(previousProfile) &&
+              normalizeRole(previousProfile?.role) !== normalizeRole(updatedProfile.role);
+
+            if (roleChanged) {
+              window.setTimeout(() => setDataVersion((version) => version + 1), 0);
+            }
+
+            return updatedProfile;
+          });
+          setProfiles((current) => {
+            const exists = current.some((profile) => profile.id === updatedProfile.id);
+
+            if (!exists) {
+              return [updatedProfile, ...current];
+            }
+
+            return current.map((profile) =>
+              profile.id === updatedProfile.id ? updatedProfile : profile
+            );
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(profileChannel);
+    };
+  }, [dataVersion, period, user]);
 
   const analytics = useMemo(() => {
     const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
@@ -328,7 +418,7 @@ export default function DashboardPage() {
           )
         ).size;
         const profile = profileById.get(userId);
-        const role: UserRole = profile?.role === "admin" ? "admin" : "consultor";
+        const role = normalizeRole(profile?.role);
 
         return {
           id: userId,
@@ -391,6 +481,11 @@ export default function DashboardPage() {
       totalConversations: conversations.length,
       totalMessages: messages.length,
       totalAccesses: ranking.reduce((sum, row) => sum + row.accesses, 0),
+      latestAccess:
+        ranking
+          .map((row) => row.lastAccess)
+          .filter((value): value is string => Boolean(value))
+          .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] ?? null,
       totalLeads: ranking.reduce((sum, row) => sum + row.leads, 0),
       ranking,
       activeCollaborator: ranking[0]?.name || "Sem dados",
@@ -402,11 +497,16 @@ export default function DashboardPage() {
       messagesByCollaborator,
       conversationsByCollaborator,
       accessesByCollaborator,
+      leadsByCollaborator: ranking.map((row) => ({
+        name: row.name,
+        leads: row.leads
+      })),
       latestConversations: conversations.slice(0, 6)
     };
   }, [conversations, messages, profiles, user]);
 
-  const isAdmin = currentProfile?.role === "admin";
+  const currentRole = normalizeRole(currentProfile?.role);
+  const isAdmin = currentRole === "admin";
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -521,11 +621,11 @@ export default function DashboardPage() {
                   {periodOptions.find((option) => option.key === period)?.label}
                 </p>
                 <h2 className="mt-1 text-2xl font-bold">
-                  {isAdmin ? "Painel gerencial comercial" : "Painel do consultor"}
+                  {isAdmin ? "Painel gerencial comercial" : "Painel individual"}
                 </h2>
               </div>
               <div className="rounded-md bg-[#dcf8c6] px-4 py-3 text-sm font-bold text-emerald-950">
-                {user.email} · {isAdmin ? "admin" : "consultor"}
+                {user.email} · {roleLabel(currentRole)}
               </div>
             </header>
 
@@ -541,6 +641,11 @@ export default function DashboardPage() {
                   icon={<Users className="h-5 w-5" />}
                   label={isAdmin ? "Total de usuarios" : "Usuario"}
                   value={compactNumber(analytics.totalUsers)}
+                />
+                <MetricCard
+                  icon={<Clock className="h-5 w-5" />}
+                  label="Ultimo acesso"
+                  value={analytics.latestAccess ? formatDate(analytics.latestAccess) : "sem registro"}
                 />
                 <MetricCard
                   icon={<MessagesSquare className="h-5 w-5" />}
@@ -569,7 +674,7 @@ export default function DashboardPage() {
                 />
                 <MetricCard
                   icon={<Bot className="h-5 w-5" />}
-                  label="Total de atendimentos IA"
+                  label="Total de interacoes IA"
                   value={compactNumber(analytics.assistantMessages)}
                 />
                 <MetricCard
@@ -643,7 +748,7 @@ export default function DashboardPage() {
                 </Panel>
               </div>
 
-              <div className="grid gap-5 xl:grid-cols-3">
+              <div className="grid gap-5 xl:grid-cols-2">
                 <Panel title="Acessos por colaborador">
                   <ChartFrame>
                     <BarChart data={analytics.accessesByCollaborator}>
@@ -654,6 +759,22 @@ export default function DashboardPage() {
                       <Bar
                         dataKey="acessos"
                         fill="#0ea5e9"
+                        radius={[6, 6, 0, 0]}
+                      />
+                    </BarChart>
+                  </ChartFrame>
+                </Panel>
+
+                <Panel title="Leads atendidos por usuario">
+                  <ChartFrame>
+                    <BarChart data={analytics.leadsByCollaborator}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" tickLine={false} axisLine={false} />
+                      <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                      <Tooltip />
+                      <Bar
+                        dataKey="leads"
+                        fill="#f59e0b"
                         radius={[6, 6, 0, 0]}
                       />
                     </BarChart>
@@ -710,7 +831,7 @@ export default function DashboardPage() {
                                 {row.name}
                               </p>
                               <p className="mt-1 text-xs font-medium text-slate-500">
-                                {row.role} · {row.leads} leads atendidos · IA: {row.aiModel}
+                                {roleLabel(row.role)} · {row.leads} leads atendidos · IA: {row.aiModel}
                               </p>
                             </div>
                             <span className="flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">

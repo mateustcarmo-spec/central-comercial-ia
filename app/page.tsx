@@ -64,6 +64,26 @@ const supabase = createClient(
   supabaseAnonKey
 );
 
+const legacyStorageKeys = [
+  "role",
+  "userRole",
+  "profile",
+  "currentProfile",
+  "supabase.auth.role",
+  "central-comercial-role"
+];
+
+function clearLegacyAuthCache() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  legacyStorageKeys.forEach((key) => {
+    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
+  });
+}
+
 function extractSection(content: string, title: string, nextTitles: string[]) {
   const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const escapedNextTitles = nextTitles
@@ -161,6 +181,8 @@ export default function Home() {
       setAuthLoading(false);
       return;
     }
+
+    clearLegacyAuthCache();
 
     supabase.auth.getSession().then(({ data }) => {
       setUser(data.session?.user ?? null);
