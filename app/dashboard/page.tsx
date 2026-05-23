@@ -161,15 +161,7 @@ function normalizeRole(role: string | null | undefined): UserRole | null {
 }
 
 function roleLabel(role: UserRole | null | undefined) {
-  if (role === "admin") {
-    return "admin";
-  }
-
-  if (role === "consultor") {
-    return "consultor";
-  }
-
-  return "perfil nao definido";
+  return role === "admin" || role === "consultor" ? role : "";
 }
 
 function collaboratorName(
@@ -507,6 +499,7 @@ export default function DashboardPage() {
 
   const currentRole = normalizeRole(currentProfile?.role);
   const isAdmin = currentRole === "admin";
+  const currentRoleLabel = roleLabel(currentRole);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -625,7 +618,8 @@ export default function DashboardPage() {
                 </h2>
               </div>
               <div className="rounded-md bg-[#dcf8c6] px-4 py-3 text-sm font-bold text-emerald-950">
-                {user.email} · {roleLabel(currentRole)}
+                {user.email}
+                {currentRoleLabel ? ` · ${currentRoleLabel}` : ""}
               </div>
             </header>
 
@@ -831,7 +825,8 @@ export default function DashboardPage() {
                                 {row.name}
                               </p>
                               <p className="mt-1 text-xs font-medium text-slate-500">
-                                {roleLabel(row.role)} · {row.leads} leads atendidos · IA: {row.aiModel}
+                                {roleLabel(row.role) ? `${roleLabel(row.role)} · ` : ""}
+                                {row.leads} leads atendidos · IA: {row.aiModel}
                               </p>
                             </div>
                             <span className="flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
