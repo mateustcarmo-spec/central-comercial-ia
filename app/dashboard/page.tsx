@@ -175,27 +175,33 @@ function roleLabel(role: UserRole | null | undefined) {
   return role === "admin" || role === "consultor" ? role : "";
 }
 
+function displayNameFromEmail(email: string | null | undefined) {
+  return email?.split("@")[0]?.trim() || "";
+}
+
+function profileDisplayName(profile: ProfileRow | null | undefined) {
+  const displayName = profile?.display_name?.trim();
+
+  if (displayName) {
+    return displayName;
+  }
+
+  return profile?.email?.trim() || "";
+}
+
 function collaboratorName(
   userId: string,
   user: User | null,
-  profiles: Map<string, ProfileRow>,
-  index: number
+  profiles: Map<string, ProfileRow>
 ) {
   const profile = profiles.get(userId);
+  const profileName = profileDisplayName(profile);
 
-  if (profile?.display_name) {
-    return profile.display_name;
+  if (profileName) {
+    return profileName;
   }
 
-  if (profile?.email) {
-    return profile.email;
-  }
-
-  if (user?.id === userId) {
-    return user.email || "Voce";
-  }
-
-  return `Colaborador ${index + 1}`;
+  return user?.id === userId ? user.email || userId : userId;
 }
 
 function normalizeLeadStatus(value: string | null): LeadStatus {
@@ -228,6 +234,11 @@ function topItems(items: (string | null)[], fallback: string) {
 
 async function loadOrCreateCurrentProfile(user: User) {
   const email = user.email?.trim() || null;
+  const displayName =
+    user.user_metadata?.name ||
+    user.user_metadata?.full_name ||
+    displayNameFromEmail(email) ||
+    null;
   const profileQuery = supabase
     .from("profiles")
     .select(profileSelect)
@@ -242,7 +253,22 @@ async function loadOrCreateCurrentProfile(user: User) {
   }
 
   if (data) {
-    return data as ProfileRow;
+    const profile = data as ProfileRow;
+
+    if (!profile.display_name?.trim() && displayName) {
+      const { data: updatedProfile, error: updateError } = await supabase
+        .from("profiles")
+        .update({ display_name: displayName })
+        .eq("id", profile.id)
+        .select(profileSelect)
+        .single();
+
+      if (!updateError && updatedProfile) {
+        return updatedProfile as ProfileRow;
+      }
+    }
+
+    return profile;
   }
 
   const { data: createdProfile, error: createError } = await supabase
@@ -250,9 +276,9 @@ async function loadOrCreateCurrentProfile(user: User) {
     .insert({
       id: user.id,
       email,
-      display_name:
-        user.user_metadata?.name || user.user_metadata?.full_name || null,
-      role: "consultor"
+      display_name: displayName,
+      role: "consultor",
+      last_access_at: new Date().toISOString()
     })
     .select(profileSelect)
     .single();
@@ -262,6 +288,19 @@ async function loadOrCreateCurrentProfile(user: User) {
   }
 
   return createdProfile as ProfileRow;
+}
+
+function mergeProfiles(...profileGroups: ProfileRow[][]) {
+  const profilesById = new Map<string, ProfileRow>();
+
+  profileGroups.flat().forEach((profile) => {
+    profilesById.set(profile.id, {
+      ...profilesById.get(profile.id),
+      ...profile
+    });
+  });
+
+  return Array.from(profilesById.values());
 }
 
 export default function DashboardPage() {
@@ -357,8 +396,36 @@ export default function DashboardPage() {
         throw new Error(messageResult.error.message);
       }
 
+      const loadedProfiles = (profileListResult.data ?? []) as ProfileRow[];
+      const loadedProfileIds = new Set(loadedProfiles.map((profile) => profile.id));
+      const dataUserIds = Array.from(
+        new Set([
+          ...(conversationResult.data ?? []).map((conversation) => conversation.user_id),
+          ...(messageResult.data ?? []).map((message) => message.user_id)
+        ])
+      );
+      const missingProfileIds = dataUserIds.filter(
+        (profileId) => !loadedProfileIds.has(profileId)
+      );
+      const missingProfilesResult = missingProfileIds.length
+        ? await supabase
+            .from("profiles")
+            .select(profileSelect)
+            .in("id", missingProfileIds)
+        : { data: [], error: null };
+
+      if (missingProfilesResult.error) {
+        throw new Error(missingProfilesResult.error.message);
+      }
+
+      const resolvedProfiles = mergeProfiles(
+        [currentUserProfile],
+        loadedProfiles,
+        (missingProfilesResult.data ?? []) as ProfileRow[]
+      );
+
       setCurrentProfile(currentUserProfile);
-      setProfiles((profileListResult.data ?? []) as ProfileRow[]);
+      setProfiles(resolvedProfiles);
       setConversations((conversationResult.data ?? []) as ConversationRow[]);
       setMessages((messageResult.data ?? []) as MessageRow[]);
     }
@@ -444,9 +511,9 @@ export default function DashboardPage() {
     );
 
     const names = new Map(
-      userIds.map((userId, index) => [
+      userIds.map((userId) => [
         userId,
-        collaboratorName(userId, user, profileById, index)
+        collaboratorName(userId, user, profileById)
       ])
     );
 
@@ -471,7 +538,7 @@ export default function DashboardPage() {
 
         return {
           id: userId,
-          name: names.get(userId) || "Colaborador",
+          name: names.get(userId) || userId,
           role,
           accesses: profile?.access_count ?? 0,
           lastAccess: profile?.last_access_at ?? null,
