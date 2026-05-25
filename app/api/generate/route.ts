@@ -1,65 +1,128 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { NextResponse } from "next/server";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
-const systemPrompt =
-  [
-    "Você é um consultor comercial especialista em captação de alunos EAD da UniCesumar.",
-    "",
-    "Seu papel é ajudar o consultor comercial a investigar melhor o lead antes de tentar conduzir para matrícula.",
-    "Atue como um consultor de vendas consultivo: crie conexão, acolha inseguranças, faça sondagem e só avance quando houver contexto suficiente.",
-    "",
-    "Nunca empurre fechamento logo na primeira resposta.",
-    "Antes de vender, ajude o consultor a entender o momento, objetivo, rotina e inseguranças do lead.",
-    "Sempre faça uma pergunta de sondagem ao final.",
-    "Sempre oriente o consultor se vale enviar áudio ou vídeo.",
-    "Adapte a resposta ao curso informado e explique de forma simples como esse curso pode agregar na carreira do lead.",
-    "",
-    "Regras de sondagem inteligente:",
-    "- quando o lead demonstrar insegurança com EAD, sugira vídeo curto do polo, vídeo mostrando suporte presencial ou áudio explicativo",
-    "- quando o lead achar caro, sugira áudio humanizado explicando investimento, flexibilidade e suporte, sem inventar valores",
-    "- quando o lead estiver frio, sugira uma pergunta leve para entender o objetivo profissional",
-    "- quando o lead tiver pouco tempo, sugira áudio curto explicando flexibilidade do EAD e organização da rotina",
-    "- quando houver interesse alto, sugira vídeo curto ou convite leve para conhecer o polo, sem pressionar fechamento",
-    "",
-    "A mensagem para o lead deve:",
-    "- ser curta e acolhedora para WhatsApp",
-    "- parecer conversa real de WhatsApp",
-    "- acolher a dúvida ou objeção",
-    "- gerar conexão com a realidade do lead",
-    "- explicar de forma simples como o curso pode agregar na carreira profissional",
-    "- reforçar flexibilidade do EAD e suporte do polo quando fizer sentido",
-    "- terminar com uma pergunta de sondagem para continuar a conversa",
-    "",
-    "A dica para o consultor deve:",
-    "- sugerir uma ação prática: áudio, vídeo, visita ao polo, explicação do suporte presencial ou pergunta de sondagem",
-    "- sugerir vídeo do polo quando o lead demonstrar insegurança com EAD",
-    "- sugerir áudio quando o lead demonstrar dúvida, medo, objeção de valor ou falta de tempo",
-    "- sugerir pergunta leve quando o lead estiver frio",
-    "- nunca ser genérica",
-    "- explicar em 1 frase o motivo da ação sugerida",
-    "",
-    "Formato obrigatório da resposta:",
-    "",
-    "Mensagem para o lead:",
-    "[texto curto e acolhedor para WhatsApp]",
-    "",
-    "Dica para o consultor:",
-    "[sugestão prática: áudio, vídeo, visita ao polo ou pergunta de sondagem]",
-    "",
-    "Pergunta de sondagem:",
-    "[uma pergunta curta para continuar a conversa]",
-    "",
-    "Não prometa emprego, salário ou resultado garantido.",
-    "Não invente valores de mensalidade.",
-    "Evite pressão comercial.",
-    "Use tom humano, acolhedor e consultivo."
-  ].join("\n");
+type InstitutionKey = "unicesumar" | "unifecaf";
 
 type ChatMessage = {
   role: "consultant" | "assistant";
   content: string;
 };
+
+const institutionConfig: Record<
+  InstitutionKey,
+  { label: string; knowledgeFile: string; focus: string[] }
+> = {
+  unicesumar: {
+    label: "UniCesumar",
+    knowledgeFile: "unicesumar.md",
+    focus: [
+      "EAD",
+      "modulos",
+      "Studeo",
+      "polo de apoio",
+      "videos dos cursos",
+      "aplicativo",
+      "suporte pedagogico",
+      "provas presenciais",
+      "rotina flexivel"
+    ]
+  },
+  unifecaf: {
+    label: "UniFECAF",
+    knowledgeFile: "unifecaf.md",
+    focus: [
+      "empregabilidade",
+      "mercado de trabalho",
+      "EAD e semipresencial",
+      "novo polo Santos",
+      "conexao com carreira",
+      "pos-graduacao",
+      "diferenciais profissionais"
+    ]
+  }
+};
+
+function normalizeInstitution(value: unknown): InstitutionKey {
+  return value === "unifecaf" ? "unifecaf" : "unicesumar";
+}
+
+async function loadKnowledge(institution: InstitutionKey) {
+  try {
+    return await readFile(
+      path.join(
+        process.cwd(),
+        "knowledge",
+        institutionConfig[institution].knowledgeFile
+      ),
+      "utf8"
+    );
+  } catch {
+    return "";
+  }
+}
+
+function buildSystemPrompt(institution: InstitutionKey, knowledge: string) {
+  const config = institutionConfig[institution];
+
+  return [
+    `Voce e um consultor comercial especialista em captacao de alunos da ${config.label}.`,
+    "",
+    "Seu papel e ajudar o consultor comercial a investigar melhor o lead antes de tentar conduzir para matricula.",
+    "Atue como um consultor de vendas consultivo: crie conexao, acolha insegurancas, faca sondagem e so avance quando houver contexto suficiente.",
+    "",
+    `Instituicao selecionada: ${config.label}.`,
+    `Focos comerciais desta instituicao: ${config.focus.join(", ")}.`,
+    knowledge ? `Base de conhecimento da instituicao:\n${knowledge}` : "",
+    "",
+    "Nunca empurre fechamento logo na primeira resposta.",
+    "Antes de vender, ajude o consultor a entender o momento, objetivo, rotina e insegurancas do lead.",
+    "Sempre faca uma pergunta de sondagem ao final.",
+    "Sempre oriente o consultor se vale enviar audio ou video.",
+    "Adapte a resposta ao curso informado e explique de forma simples como esse curso pode agregar na carreira do lead.",
+    "",
+    "Regras de sondagem inteligente:",
+    "- quando o lead demonstrar inseguranca com modalidade, sugira video curto, explicacao simples ou audio humanizado",
+    "- quando o lead achar caro, explique investimento e valor percebido sem inventar valores",
+    "- quando o lead estiver frio, sugira uma pergunta leve para entender o objetivo profissional",
+    "- quando o lead tiver pouco tempo, conecte a resposta a rotina e flexibilidade",
+    "- quando houver interesse alto, sugira video curto ou convite leve para conhecer o polo, sem pressionar fechamento",
+    "",
+    "A mensagem para o lead deve:",
+    "- ser curta e acolhedora para WhatsApp",
+    "- parecer conversa real de WhatsApp",
+    "- acolher a duvida ou objecao",
+    "- gerar conexao com a realidade do lead",
+    "- explicar de forma simples como o curso pode agregar na carreira profissional",
+    "- reforcar os diferenciais da instituicao selecionada quando fizer sentido",
+    "- terminar com uma pergunta de sondagem para continuar a conversa",
+    "",
+    "A dica para o consultor deve:",
+    "- sugerir uma acao pratica: audio, video, visita ao polo, explicacao de suporte ou pergunta de sondagem",
+    "- ser especifica para a instituicao selecionada",
+    "- explicar em 1 frase o motivo da acao sugerida",
+    "",
+    "Formato obrigatorio da resposta:",
+    "",
+    "Mensagem para o lead:",
+    "[texto curto e acolhedor para WhatsApp]",
+    "",
+    "Dica para o consultor:",
+    "[sugestao pratica: audio, video, visita ao polo ou pergunta de sondagem]",
+    "",
+    "Pergunta de sondagem:",
+    "[uma pergunta curta para continuar a conversa]",
+    "",
+    "Nao prometa emprego, salario ou resultado garantido.",
+    "Nao invente valores de mensalidade.",
+    "Evite pressao comercial.",
+    "Use tom humano, acolhedor e consultivo."
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 function isValidMessage(message: unknown): message is ChatMessage {
   if (!message || typeof message !== "object") {
@@ -77,14 +140,15 @@ function isValidMessage(message: unknown): message is ChatMessage {
 
 export async function POST(request: Request) {
   try {
-    const { leadName, course, profile, objection, leadStatus, messages } =
+    const { leadName, institution, course, profile, objection, leadStatus, messages } =
       await request.json();
+    const selectedInstitution = normalizeInstitution(institution);
 
     if (!course || !profile || !objection || !Array.isArray(messages)) {
       return NextResponse.json(
         {
           error:
-            "Preencha curso, perfil do lead, objeção e envie o histórico da conversa."
+            "Preencha curso, perfil do lead, objecao e envie o historico da conversa."
         },
         { status: 400 }
       );
@@ -101,7 +165,7 @@ export async function POST(request: Request) {
 
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
-        { error: "Configure a variável OPENAI_API_KEY no servidor." },
+        { error: "Configure a variavel OPENAI_API_KEY no servidor." },
         { status: 500 }
       );
     }
@@ -109,19 +173,21 @@ export async function POST(request: Request) {
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
+    const knowledge = await loadKnowledge(selectedInstitution);
 
     const chatMessages: ChatCompletionMessageParam[] = [
       {
         role: "system",
-        content: systemPrompt
+        content: buildSystemPrompt(selectedInstitution, knowledge)
       },
       {
         role: "user",
         content: [
+          `Instituicao: ${institutionConfig[selectedInstitution].label}`,
           leadName ? `Nome do lead: ${leadName}` : "",
           `Curso: ${course}`,
           `Perfil do lead: ${profile}`,
-          `Objeção inicial: ${objection}`,
+          `Objecao inicial: ${objection}`,
           leadStatus ? `Status do lead: ${leadStatus}` : ""
         ]
           .filter(Boolean)
@@ -139,7 +205,7 @@ export async function POST(request: Request) {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.7,
-      max_tokens: 260,
+      max_tokens: 320,
       messages: chatMessages
     });
 
@@ -147,7 +213,7 @@ export async function POST(request: Request) {
 
     if (!message) {
       return NextResponse.json(
-        { error: "Não foi possível gerar a abordagem agora." },
+        { error: "Nao foi possivel gerar a abordagem agora." },
         { status: 502 }
       );
     }

@@ -38,10 +38,13 @@ import {
 type PeriodKey = "today" | "7d" | "30d";
 type LeadStatus = "Frio" | "Morno" | "Quente";
 type UserRole = "admin" | "consultor";
+type InstitutionKey = "unicesumar" | "unifecaf";
+type InstitutionFilter = InstitutionKey | "all";
 
 type ConversationRow = {
   id: string;
   user_id: string;
+  institution: InstitutionKey | null;
   lead_name: string | null;
   course: string | null;
   profile: string | null;
@@ -66,6 +69,7 @@ type ProfileRow = {
   display_name: string | null;
   role: UserRole | null;
   profile_type?: UserRole | null;
+  institution: InstitutionKey | null;
   access_count: number | null;
   last_access_at: string | null;
   ai_model: string | null;
@@ -94,7 +98,7 @@ const isSupabaseConfigured = Boolean(
 );
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 const profileSelect =
-  "id, email, display_name, role, profile_type, access_count, last_access_at, ai_model";
+  "id, email, display_name, role, profile_type, institution, access_count, last_access_at, ai_model";
 
 const legacyStorageKeys = [
   "role",
@@ -109,6 +113,10 @@ const periodOptions: { key: PeriodKey; label: string; days: number }[] = [
   { key: "today", label: "Hoje", days: 1 },
   { key: "7d", label: "7 dias", days: 7 },
   { key: "30d", label: "30 dias", days: 30 }
+];
+const institutionOptions: { key: InstitutionKey; label: string }[] = [
+  { key: "unicesumar", label: "UniCesumar" },
+  { key: "unifecaf", label: "UniFECAF" }
 ];
 
 const leadColors: Record<LeadStatus, string> = {
@@ -175,6 +183,60 @@ function roleLabel(role: UserRole | null | undefined) {
   return role === "admin" || role === "consultor" ? role : "";
 }
 
+function normalizeInstitution(value: string | null | undefined): InstitutionKey {
+  return value === "unifecaf" ? "unifecaf" : "unicesumar";
+}
+
+function institutionLabel(institution: InstitutionFilter | null | undefined) {
+  if (institution === "all") {
+    return "Todas";
+  }
+
+  return (
+    institutionOptions.find((option) => option.key === institution)?.label ||
+    "UniCesumar"
+  );
+}
+
+function dashboardTheme(institution: InstitutionFilter) {
+  if (institution === "unifecaf") {
+    return {
+      page: "bg-[#eef2ff]",
+      accentText: "text-violet-700",
+      primary: "bg-emerald-600 text-white",
+      active: "bg-emerald-600 text-white",
+      soft: "border-violet-100 bg-violet-50",
+      chartA: "#7c3aed",
+      chartB: "#10b981",
+      chartC: "#0ea5e9"
+    };
+  }
+
+  if (institution === "unicesumar") {
+    return {
+      page: "bg-[#e8f1fb]",
+      accentText: "text-blue-700",
+      primary: "bg-blue-700 text-white",
+      active: "bg-blue-700 text-white",
+      soft: "border-amber-100 bg-amber-50",
+      chartA: "#1d4ed8",
+      chartB: "#f59e0b",
+      chartC: "#0ea5e9"
+    };
+  }
+
+  return {
+    page: "bg-slate-100",
+    accentText: "text-emerald-700",
+    primary: "bg-emerald-600 text-white",
+    active: "bg-emerald-600 text-white",
+    soft: "border-emerald-100 bg-emerald-50",
+    chartA: "#0ea5e9",
+    chartB: "#f59e0b",
+    chartC: "#10b981"
+  };
+}
+
 function profileDisplayName(profile: ProfileRow | null | undefined) {
   const displayName = profile?.display_name?.trim();
 
@@ -234,6 +296,7 @@ async function loadOrCreateCurrentProfile(user: User) {
     user.user_metadata?.name ||
     user.user_metadata?.full_name ||
     null;
+  const institution = normalizeInstitution(user.user_metadata?.institution);
   const profileQuery = supabase
     .from("profiles")
     .select(profileSelect)
@@ -272,6 +335,7 @@ async function loadOrCreateCurrentProfile(user: User) {
       id: user.id,
       email,
       display_name: displayName,
+      institution,
       role: "consultor",
       last_access_at: new Date().toISOString()
     })
@@ -304,6 +368,8 @@ export default function DashboardPage() {
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [authLoading, setAuthLoading] = useState(true);
   const [period, setPeriod] = useState<PeriodKey>("7d");
+  const [institutionFilter, setInstitutionFilter] =
+    useState<InstitutionFilter>("all");
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [loadingData, setLoadingData] = useState(false);
@@ -352,6 +418,9 @@ export default function DashboardPage() {
       await supabase.rpc("register_profile_access").then(() => undefined);
       const currentUserProfile = await loadOrCreateCurrentProfile(activeUser);
       const isCurrentUserAdmin = isProfileAdmin(currentUserProfile);
+      const selectedInstitution: InstitutionFilter = isCurrentUserAdmin
+        ? institutionFilter
+        : normalizeInstitution(currentUserProfile.institution);
 
       let profileListQuery = supabase
         .from("profiles")
@@ -360,7 +429,7 @@ export default function DashboardPage() {
       let conversationQuery = supabase
         .from("conversations")
         .select(
-          "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
+          "id, user_id, institution, lead_name, course, profile, objection, lead_status, created_at, updated_at"
         )
         .gte("created_at", periodStart)
         .order("updated_at", { ascending: false });
@@ -374,6 +443,9 @@ export default function DashboardPage() {
         profileListQuery = profileListQuery.eq("id", userId);
         conversationQuery = conversationQuery.eq("user_id", userId);
         messageQuery = messageQuery.eq("user_id", userId);
+      } else if (selectedInstitution !== "all") {
+        profileListQuery = profileListQuery.eq("institution", selectedInstitution);
+        conversationQuery = conversationQuery.eq("institution", selectedInstitution);
       }
 
       const [profileListResult, conversationResult, messageResult] =
@@ -392,7 +464,12 @@ export default function DashboardPage() {
       }
 
       const loadedConversations = (conversationResult.data ?? []) as ConversationRow[];
-      const loadedMessages = (messageResult.data ?? []) as MessageRow[];
+      const conversationIds = new Set(
+        loadedConversations.map((conversation) => conversation.id)
+      );
+      const loadedMessages = ((messageResult.data ?? []) as MessageRow[]).filter(
+        (message) => conversationIds.has(message.conversation_id)
+      );
       const loadedProfiles = (profileListResult.data ?? []) as ProfileRow[];
       const loadedProfileIds = new Set(loadedProfiles.map((profile) => profile.id));
       const dataUserIds = Array.from(
@@ -495,7 +572,7 @@ export default function DashboardPage() {
     return () => {
       supabase.removeChannel(profileChannel);
     };
-  }, [dataVersion, period, user]);
+  }, [dataVersion, institutionFilter, period, user]);
 
   const analytics = useMemo(() => {
     const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
@@ -621,6 +698,10 @@ export default function DashboardPage() {
   const currentRole = profileRole(currentProfile);
   const isAdmin = currentRole === "admin";
   const currentRoleLabel = roleLabel(currentRole);
+  const activeInstitution: InstitutionFilter = isAdmin
+    ? institutionFilter
+    : normalizeInstitution(currentProfile?.institution);
+  const theme = dashboardTheme(activeInstitution);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -637,10 +718,10 @@ export default function DashboardPage() {
 
   if (!user) {
     return (
-      <main className="min-h-screen bg-[#e5ddd5]">
+      <main className={`min-h-screen ${theme.page}`}>
         <section className="flex min-h-screen items-center justify-center px-5">
           <div className="w-full max-w-md rounded-lg bg-white p-6 text-center shadow-soft">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+            <div className={`mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white ${theme.accentText}`}>
               <BarChart3 aria-hidden="true" className="h-7 w-7" />
             </div>
             <h1 className="mt-5 text-2xl font-bold text-slate-950">
@@ -652,7 +733,7 @@ export default function DashboardPage() {
             </p>
             <Link
               href="/"
-              className="mt-6 inline-flex min-h-11 items-center justify-center rounded-md bg-emerald-600 px-5 text-sm font-bold text-white transition hover:bg-emerald-700"
+              className={`mt-6 inline-flex min-h-11 items-center justify-center rounded-md px-5 text-sm font-bold transition ${theme.primary}`}
             >
               Entrar na Central
             </Link>
@@ -664,13 +745,13 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#e5ddd5] text-slate-950">
+    <main className={`min-h-screen ${theme.page} text-slate-950`}>
       <section className="mx-auto min-h-screen w-full max-w-7xl bg-slate-50 lg:p-5">
         <div className="grid min-h-screen bg-white lg:min-h-[calc(100vh-40px)] lg:grid-cols-[260px_1fr] lg:rounded-lg lg:shadow-soft">
           <aside className="border-b border-slate-200 bg-[#f0f2f5] p-5 lg:border-b-0 lg:border-r lg:p-6">
             <div className="flex items-start justify-between gap-3 lg:block">
               <div>
-                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">
+                <p className={`text-xs font-bold uppercase tracking-wide ${theme.accentText}`}>
                   Central Comercial IA
                 </p>
                 <h1 className="mt-2 text-2xl font-bold">Dashboard</h1>
@@ -693,18 +774,18 @@ export default function DashboardPage() {
             <nav className="mt-6 grid gap-2">
               <Link
                 href="/"
-                className="flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-bold text-slate-600 transition hover:bg-white hover:text-emerald-700"
+                className={`flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-bold text-slate-600 transition hover:bg-white ${theme.accentText}`}
               >
                 <MessageCircle aria-hidden="true" className="h-5 w-5" />
                 Chat Comercial
               </Link>
-              <span className="flex min-h-11 items-center gap-3 rounded-md bg-white px-3 text-sm font-bold text-emerald-700 shadow-sm">
+              <span className={`flex min-h-11 items-center gap-3 rounded-md bg-white px-3 text-sm font-bold ${theme.accentText} shadow-sm`}>
                 <BarChart3 aria-hidden="true" className="h-5 w-5" />
                 Dashboard
               </span>
             </nav>
 
-            <div className="mt-6 rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+            <div className={`mt-6 rounded-lg border p-4 ${theme.soft}`}>
               <p className="text-sm font-bold text-emerald-950">
                 Filtro por periodo
               </p>
@@ -716,8 +797,8 @@ export default function DashboardPage() {
                     onClick={() => setPeriod(option.key)}
                     className={`min-h-10 rounded-md px-3 text-left text-sm font-bold transition ${
                       period === option.key
-                        ? "bg-emerald-600 text-white"
-                        : "bg-white text-slate-600 hover:text-emerald-700"
+                        ? theme.active
+                        : `bg-white text-slate-600 ${theme.accentText}`
                     }`}
                   >
                     {option.label}
@@ -725,14 +806,43 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
+
+            {isAdmin ? (
+              <div className={`mt-4 rounded-lg border p-4 ${theme.soft}`}>
+                <p className="text-sm font-bold text-slate-950">
+                  Filtro por instituição
+                </p>
+                <div className="mt-3 grid gap-2">
+                  {[
+                    { key: "all" as InstitutionFilter, label: "Todas" },
+                    ...institutionOptions
+                  ].map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setInstitutionFilter(option.key)}
+                      className={`min-h-10 rounded-md px-3 text-left text-sm font-bold transition ${
+                        institutionFilter === option.key
+                          ? theme.active
+                          : `bg-white text-slate-600 ${theme.accentText}`
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </aside>
 
           <section className="min-w-0 bg-slate-50">
             <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-5 py-5 sm:flex-row sm:items-center sm:justify-between lg:rounded-tr-lg lg:px-7">
               <div>
-                <p className="flex items-center gap-2 text-sm font-bold text-emerald-700">
+                <p className={`flex items-center gap-2 text-sm font-bold ${theme.accentText}`}>
                   <CalendarDays aria-hidden="true" className="h-4 w-4" />
                   {periodOptions.find((option) => option.key === period)?.label}
+                  {" · "}
+                  {institutionLabel(activeInstitution)}
                 </p>
                 <h2 className="mt-1 text-2xl font-bold">
                   {isAdmin
@@ -742,8 +852,9 @@ export default function DashboardPage() {
                       : "Dashboard"}
                 </h2>
               </div>
-              <div className="rounded-md bg-[#dcf8c6] px-4 py-3 text-sm font-bold text-emerald-950">
+              <div className="rounded-md bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700">
                 {user.email}
+                {` · ${institutionLabel(activeInstitution)}`}
                 {currentRoleLabel ? ` · ${currentRoleLabel}` : ""}
               </div>
             </header>
@@ -877,7 +988,7 @@ export default function DashboardPage() {
                       <Tooltip />
                       <Bar
                         dataKey="acessos"
-                        fill="#0ea5e9"
+                        fill={theme.chartC}
                         radius={[6, 6, 0, 0]}
                       />
                     </BarChart>
@@ -893,7 +1004,7 @@ export default function DashboardPage() {
                       <Tooltip />
                       <Bar
                         dataKey="leads"
-                        fill="#f59e0b"
+                        fill={theme.chartB}
                         radius={[6, 6, 0, 0]}
                       />
                     </BarChart>
@@ -909,7 +1020,7 @@ export default function DashboardPage() {
                       <Tooltip />
                       <Bar
                         dataKey="conversas"
-                        fill="#10b981"
+                        fill={theme.chartA}
                         radius={[6, 6, 0, 0]}
                       />
                     </BarChart>
@@ -926,9 +1037,9 @@ export default function DashboardPage() {
                       <Line
                         type="monotone"
                         dataKey="mensagens"
-                        stroke="#059669"
+                        stroke={theme.chartA}
                         strokeWidth={3}
-                        dot={{ r: 5, fill: "#059669" }}
+                        dot={{ r: 5, fill: theme.chartA }}
                       />
                     </LineChart>
                   </ChartFrame>
@@ -982,6 +1093,9 @@ export default function DashboardPage() {
                               </p>
                               <p className="truncate text-sm text-slate-500">
                                 {conversation.course || "Curso nao informado"}
+                              </p>
+                              <p className="mt-1 text-xs font-bold text-slate-400">
+                                {institutionLabel(conversation.institution)}
                               </p>
                             </div>
                             <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
