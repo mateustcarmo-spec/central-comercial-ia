@@ -42,6 +42,7 @@ type UserRole = "admin" | "consultor";
 type ConversationRow = {
   id: string;
   user_id: string;
+  profiles?: ProfileRow | ProfileRow[] | null;
   lead_name: string | null;
   course: string | null;
   profile: string | null;
@@ -54,6 +55,7 @@ type ConversationRow = {
 type MessageRow = {
   id: string;
   user_id: string;
+  profiles?: ProfileRow | ProfileRow[] | null;
   conversation_id: string;
   role: "consultant" | "assistant";
   content: string;
@@ -175,10 +177,6 @@ function roleLabel(role: UserRole | null | undefined) {
   return role === "admin" || role === "consultor" ? role : "";
 }
 
-function displayNameFromEmail(email: string | null | undefined) {
-  return email?.split("@")[0]?.trim() || "";
-}
-
 function profileDisplayName(profile: ProfileRow | null | undefined) {
   const displayName = profile?.display_name?.trim();
 
@@ -202,6 +200,12 @@ function collaboratorName(
   }
 
   return user?.id === userId ? user.email || userId : userId;
+}
+
+function embeddedProfile(
+  profile: ProfileRow | ProfileRow[] | null | undefined
+) {
+  return Array.isArray(profile) ? profile[0] : profile;
 }
 
 function normalizeLeadStatus(value: string | null): LeadStatus {
@@ -237,7 +241,6 @@ async function loadOrCreateCurrentProfile(user: User) {
   const displayName =
     user.user_metadata?.name ||
     user.user_metadata?.full_name ||
-    displayNameFromEmail(email) ||
     null;
   const profileQuery = supabase
     .from("profiles")
@@ -365,13 +368,17 @@ export default function DashboardPage() {
       let conversationQuery = supabase
         .from("conversations")
         .select(
-          "id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at"
+          `id, user_id, lead_name, course, profile, objection, lead_status, created_at, updated_at,
+          profiles:profiles!conversations_user_id_profiles_id_fkey (${profileSelect})`
         )
         .gte("created_at", periodStart)
         .order("updated_at", { ascending: false });
       let messageQuery = supabase
         .from("messages")
-        .select("id, user_id, conversation_id, role, content, created_at")
+        .select(
+          `id, user_id, conversation_id, role, content, created_at,
+          profiles:profiles!messages_user_id_profiles_id_fkey (${profileSelect})`
+        )
         .gte("created_at", periodStart)
         .order("created_at", { ascending: false });
 
@@ -396,12 +403,23 @@ export default function DashboardPage() {
         throw new Error(messageResult.error.message);
       }
 
-      const loadedProfiles = (profileListResult.data ?? []) as ProfileRow[];
+      const loadedConversations = (conversationResult.data ?? []) as ConversationRow[];
+      const loadedMessages = (messageResult.data ?? []) as MessageRow[];
+      const embeddedProfiles = [
+        ...loadedConversations.map((conversation) =>
+          embeddedProfile(conversation.profiles)
+        ),
+        ...loadedMessages.map((message) => embeddedProfile(message.profiles))
+      ].filter((profile): profile is ProfileRow => Boolean(profile));
+      const loadedProfiles = mergeProfiles(
+        (profileListResult.data ?? []) as ProfileRow[],
+        embeddedProfiles
+      );
       const loadedProfileIds = new Set(loadedProfiles.map((profile) => profile.id));
       const dataUserIds = Array.from(
         new Set([
-          ...(conversationResult.data ?? []).map((conversation) => conversation.user_id),
-          ...(messageResult.data ?? []).map((message) => message.user_id)
+          ...loadedConversations.map((conversation) => conversation.user_id),
+          ...loadedMessages.map((message) => message.user_id)
         ])
       );
       const missingProfileIds = dataUserIds.filter(
@@ -426,8 +444,8 @@ export default function DashboardPage() {
 
       setCurrentProfile(currentUserProfile);
       setProfiles(resolvedProfiles);
-      setConversations((conversationResult.data ?? []) as ConversationRow[]);
-      setMessages((messageResult.data ?? []) as MessageRow[]);
+      setConversations(loadedConversations);
+      setMessages(loadedMessages);
     }
 
     loadDashboardData()
