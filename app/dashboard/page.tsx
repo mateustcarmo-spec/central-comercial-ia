@@ -441,7 +441,9 @@ export default function DashboardPage() {
 
       if (!isCurrentUserAdmin) {
         profileListQuery = profileListQuery.eq("id", userId);
-        conversationQuery = conversationQuery.eq("user_id", userId);
+        conversationQuery = conversationQuery
+          .eq("user_id", userId)
+          .eq("institution", selectedInstitution);
         messageQuery = messageQuery.eq("user_id", userId);
       } else if (selectedInstitution !== "all") {
         profileListQuery = profileListQuery.eq("institution", selectedInstitution);

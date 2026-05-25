@@ -27,6 +27,7 @@ type ChatMessage = {
 
 type LeadStatus = "Frio" | "Morno" | "Quente";
 type InstitutionKey = "unicesumar" | "unifecaf";
+type UserRole = "admin" | "consultor";
 
 type Conversation = {
   id: string;
@@ -57,6 +58,8 @@ type ProfileRow = {
   id: string;
   email: string | null;
   institution: InstitutionKey | null;
+  role: UserRole | null;
+  profile_type?: UserRole | null;
 };
 
 const statusOptions: LeadStatus[] = ["Frio", "Morno", "Quente"];
@@ -64,7 +67,7 @@ const institutionOptions: { key: InstitutionKey; label: string }[] = [
   { key: "unicesumar", label: "UniCesumar" },
   { key: "unifecaf", label: "UniFECAF" }
 ];
-const profileSelect = "id, email, institution";
+const profileSelect = "id, email, institution, role, profile_type";
 const institutionStorageKey = "central-comercial-institution";
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || "https://example.supabase.co";
@@ -160,6 +163,18 @@ function normalizeInstitution(value: string | null | undefined): InstitutionKey 
   return value === "unifecaf" ? "unifecaf" : "unicesumar";
 }
 
+function normalizeRole(role: string | null | undefined): UserRole | null {
+  return role === "admin" || role === "consultor" ? role : null;
+}
+
+function profileRole(profile: ProfileRow | null | undefined): UserRole | null {
+  return normalizeRole(profile?.role) ?? normalizeRole(profile?.profile_type);
+}
+
+function isProfileAdmin(profile: ProfileRow | null | undefined) {
+  return profileRole(profile) === "admin";
+}
+
 function storedInstitution(): InstitutionKey {
   if (typeof window === "undefined") {
     return "unicesumar";
@@ -215,7 +230,7 @@ export default function Home() {
   const [authMessage, setAuthMessage] = useState("");
   const [selectedInstitution, setSelectedInstitution] =
     useState<InstitutionKey>("unicesumar");
-  const [, setCurrentProfile] = useState<ProfileRow | null>(null);
+  const [currentProfile, setCurrentProfile] = useState<ProfileRow | null>(null);
   const [profileReady, setProfileReady] = useState(false);
   const [leadName, setLeadName] = useState("");
   const [course, setCourse] = useState("");
@@ -230,6 +245,9 @@ export default function Home() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const isAdmin = isProfileAdmin(currentProfile);
+  const userInstitution = normalizeInstitution(currentProfile?.institution);
+  const canChooseInstitution = !user || isAdmin;
   const theme = institutionTheme(selectedInstitution);
 
   const lastAssistantMessage = useMemo(
@@ -291,10 +309,14 @@ export default function Home() {
       return;
     }
 
+    if (!isAdmin && selectedInstitution !== userInstitution) {
+      setSelectedInstitution(userInstitution);
+      return;
+    }
+
     window.localStorage.setItem(institutionStorageKey, selectedInstitution);
-    saveProfileInstitution(user, selectedInstitution);
     loadConversations(supabase, user.id, selectedInstitution);
-  }, [profileReady, selectedInstitution, user]);
+  }, [isAdmin, profileReady, selectedInstitution, user, userInstitution]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -318,50 +340,55 @@ export default function Home() {
       return;
     }
 
-    const nextInstitution = normalizeInstitution(
-      (data as ProfileRow | null)?.institution || selectedInstitution
-    );
+    const loadedProfile = (data as ProfileRow | null) ?? null;
+    const profileIsAdmin = isProfileAdmin(loadedProfile);
+    const nextInstitution = profileIsAdmin
+      ? selectedInstitution
+      : normalizeInstitution(loadedProfile?.institution || selectedInstitution);
 
-    setCurrentProfile((data as ProfileRow | null) ?? null);
+    setCurrentProfile(loadedProfile);
     setSelectedInstitution(nextInstitution);
     window.localStorage.setItem(institutionStorageKey, nextInstitution);
-    await saveProfileInstitution(activeUser, nextInstitution);
+    await ensureProfile(activeUser, nextInstitution, Boolean(loadedProfile));
     setProfileReady(true);
     await loadConversations(supabase, activeUser.id, nextInstitution);
   }
 
-  async function saveProfileInstitution(
+  async function ensureProfile(
     activeUser: User,
-    institution: InstitutionKey
+    institution: InstitutionKey,
+    profileExists: boolean
   ) {
     const emailValue = activeUser.email?.trim() || null;
-    const { data, error: updateError } = await supabase
-      .from("profiles")
-      .update({ email: emailValue, institution })
-      .eq("id", activeUser.id)
-      .select(profileSelect)
-      .maybeSingle();
 
-    if (!updateError && data) {
-      setCurrentProfile(data as ProfileRow);
+    if (profileExists) {
+      const { data } = await supabase
+        .from("profiles")
+        .update({ email: emailValue })
+        .eq("id", activeUser.id)
+        .select(profileSelect)
+        .maybeSingle();
+
+      if (data) {
+        setCurrentProfile(data as ProfileRow);
+      }
+
       return;
     }
 
-    if (!data) {
-      const { data: createdProfile } = await supabase
-        .from("profiles")
-        .insert({
-          id: activeUser.id,
-          email: emailValue,
-          institution,
-          role: "consultor"
-        })
-        .select(profileSelect)
-        .single();
+    const { data: createdProfile } = await supabase
+      .from("profiles")
+      .insert({
+        id: activeUser.id,
+        email: emailValue,
+        institution,
+        role: "consultor"
+      })
+      .select(profileSelect)
+      .single();
 
-      if (createdProfile) {
-        setCurrentProfile(createdProfile as ProfileRow);
-      }
+    if (createdProfile) {
+      setCurrentProfile(createdProfile as ProfileRow);
     }
   }
 
@@ -770,10 +797,11 @@ export default function Home() {
               </span>
               <select
                 value={selectedInstitution}
+                disabled={!canChooseInstitution}
                 onChange={(event) =>
                   setSelectedInstitution(event.target.value as InstitutionKey)
                 }
-                className={`min-h-11 rounded-md border border-slate-300 px-4 outline-none focus:ring-4 ${theme.focus}`}
+                className={`min-h-11 rounded-md border border-slate-300 px-4 outline-none focus:ring-4 disabled:bg-slate-100 disabled:text-slate-500 ${theme.focus}`}
               >
                 {institutionOptions.map((institution) => (
                   <option key={institution.key} value={institution.key}>
@@ -781,6 +809,11 @@ export default function Home() {
                   </option>
                 ))}
               </select>
+              {!canChooseInstitution ? (
+                <span className="text-xs font-medium text-slate-500">
+                  Instituição definida pelo seu perfil.
+                </span>
+              ) : null}
             </label>
 
             <label className="grid gap-2">
@@ -899,10 +932,11 @@ export default function Home() {
               </span>
               <select
                 value={selectedInstitution}
+                disabled={!canChooseInstitution}
                 onChange={(event) =>
                   setSelectedInstitution(event.target.value as InstitutionKey)
                 }
-                className={`min-h-11 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:ring-4 ${theme.focus}`}
+                className={`min-h-11 rounded-md border border-slate-300 bg-white px-4 text-slate-950 outline-none transition focus:ring-4 disabled:bg-slate-100 disabled:text-slate-500 ${theme.focus}`}
               >
                 {institutionOptions.map((institution) => (
                   <option key={institution.key} value={institution.key}>
@@ -910,6 +944,11 @@ export default function Home() {
                   </option>
                 ))}
               </select>
+              {!canChooseInstitution ? (
+                <span className="text-xs font-medium text-slate-500">
+                  Instituição definida pelo seu perfil.
+                </span>
+              ) : null}
             </label>
 
             <label className="grid gap-2">
